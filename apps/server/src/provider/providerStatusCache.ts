@@ -86,6 +86,9 @@ export const hydrateCachedProvider = (input: {
     checkedAt: input.cachedProvider.checkedAt,
     slashCommands: input.cachedProvider.slashCommands,
     skills: input.cachedProvider.skills,
+    ...(input.cachedProvider.pluginCatalog === undefined
+      ? {}
+      : { pluginCatalog: input.cachedProvider.pluginCatalog }),
   };
 
   return input.cachedProvider.message

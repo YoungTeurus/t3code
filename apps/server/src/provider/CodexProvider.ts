@@ -26,6 +26,7 @@ import type {
   ProviderOptionDescriptor,
   ServerProviderModel,
   ServerProviderSkill,
+  ServerProviderPluginCatalog,
 } from "@t3tools/contracts";
 import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
 
@@ -52,6 +53,7 @@ import {
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import packageJson from "../../package.json" with { type: "json" };
+import { readCodexPluginCatalog } from "./codexPluginCatalog.ts";
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
 
@@ -89,6 +91,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly models: ReadonlyArray<ServerProviderModel> | undefined;
   readonly serviceTier?: string | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly pluginCatalog?: ServerProviderPluginCatalog;
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -534,7 +537,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + CODEX_AUTH_PROBE_TIMEOUT_MS - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, serviceTier, rateLimits] = yield* Effect.all(
+  const [skillsResponse, models, serviceTier, rateLimits, pluginCatalog] = yield* Effect.all(
     [
       withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
       accountResponse.account?.type === "chatgpt"
@@ -580,6 +583,10 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
               ),
             ),
           ),
+      withCodexDiscoveryDeadline(
+        readCodexPluginCatalog(client.request("plugin/installed", { cwds: [] })),
+        deadlineMs,
+      ),
     ],
     { concurrency: "unbounded" },
   );
@@ -591,20 +598,29 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     models,
     serviceTier,
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
+    ...(pluginCatalog === undefined ? {} : { pluginCatalog }),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
-export const probeCodexSkillsForCwd = Effect.fn("probeCodexSkillsForCwd")(function* (input: {
-  readonly binaryPath: string;
-  readonly homePath?: string;
-  readonly launchArgs?: string;
-  readonly cwd: string;
-  readonly environment?: NodeJS.ProcessEnv;
-}) {
-  const { client } = yield* withCodexAppServerClient(input);
-  const skillsResponse = yield* client.request("skills/list", { cwds: [input.cwd] });
-  return parseCodexSkillsListResponse(skillsResponse, input.cwd);
-});
+export const probeCodexWorkspaceCapabilities = Effect.fn("probeCodexWorkspaceCapabilities")(
+  function* (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+    readonly launchArgs?: string;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) {
+    const { client } = yield* withCodexAppServerClient(input);
+    const [skillsResponse, pluginCatalog] = yield* Effect.all(
+      [
+        client.request("skills/list", { cwds: [input.cwd] }),
+        readCodexPluginCatalog(client.request("plugin/installed", { cwds: [input.cwd] })),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { skills: parseCodexSkillsListResponse(skillsResponse, input.cwd), pluginCatalog };
+  },
+);
 
 const emptyCodexModelsFromSettings = (codexSettings: CodexSettings): ServerProvider["models"] =>
   appendCustomCodexModels([], codexSettings.customModels);
@@ -808,6 +824,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       (models) => applyConfiguredCodexServiceTier(models, snapshot.serviceTier),
     ),
     skills: snapshot.skills,
+    ...(snapshot.pluginCatalog === undefined ? {} : { pluginCatalog: snapshot.pluginCatalog }),
     slashCommands: [
       COMPACT_SLASH_COMMAND,
       {

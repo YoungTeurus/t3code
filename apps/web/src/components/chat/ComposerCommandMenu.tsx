@@ -12,6 +12,7 @@ import {
   type PullRequestContextMetadata,
   type ScopedThreadRef,
   type ServerProviderSkill,
+  type ServerProviderPlugin,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import {
@@ -28,13 +29,14 @@ import { memo, useLayoutEffect, useRef } from "react";
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
-import { Command, CommandGroup, CommandItem, CommandList } from "../ui/command";
+import { Command, CommandGroup, CommandGroupLabel, CommandItem, CommandList } from "../ui/command";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { ComposerBanner } from "./ComposerBanner";
 import { resolvePullRequestState } from "../pullRequest/pullRequestPresentation";
 
 export type ComposerCommandItem =
+  | { id: string; type: "plugin"; plugin: ServerProviderPlugin; label: string; description: string }
   | {
       id: string;
       type: "path";
@@ -97,11 +99,19 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   isLoading: boolean;
   triggerKind: ComposerTriggerKind | null;
   emptyStateText?: string;
+  notice?: string | undefined;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
+  const groups =
+    props.triggerKind === "skill" && props.items.some((item) => item.type === "plugin")
+      ? [
+          { heading: "Plugins", items: props.items.filter((item) => item.type === "plugin") },
+          { heading: "Skills", items: props.items.filter((item) => item.type !== "plugin") },
+        ]
+      : [{ heading: undefined, items: props.items }];
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the highlighted menu item's DOM node into view
   useLayoutEffect(() => {
@@ -127,26 +137,36 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
         className="flex min-h-0 w-full flex-col overflow-hidden pb-(--chat-composer-attachment-overlap) **:data-[slot=command-item]:rounded-lg **:data-[slot=scroll-area-scrollbar]:data-[orientation=vertical]:my-4"
         data-composer-command-drawer="true"
       >
+        {props.notice ? (
+          <p role="status" className="px-5 pt-3 text-secondary-label text-xs">
+            {props.notice}
+          </p>
+        ) : null}
         {props.items.length > 0 ? (
           <CommandList
             id={props.listId}
             aria-label={props.triggerKind ? LISTBOX_LABEL_BY_TRIGGER[props.triggerKind] : undefined}
             className="max-h-72 min-h-0 scroll-pb-6"
           >
-            <CommandGroup>
-              {props.items.map((item) => (
-                <ComposerCommandMenuItem
-                  key={item.id}
-                  optionId={composerSuggestionOptionId(props.listId, item.id)}
-                  item={item}
-                  triggerKind={props.triggerKind}
-                  resolvedTheme={props.resolvedTheme}
-                  isActive={props.activeItemId === item.id}
-                  onHighlight={props.onHighlightedItemChange}
-                  onSelect={props.onSelect}
-                />
+            {groups
+              .filter((group) => group.items.length > 0)
+              .map((group) => (
+                <CommandGroup key={group.heading ?? "items"}>
+                  {group.heading ? <CommandGroupLabel>{group.heading}</CommandGroupLabel> : null}
+                  {group.items.map((item) => (
+                    <ComposerCommandMenuItem
+                      key={item.id}
+                      optionId={composerSuggestionOptionId(props.listId, item.id)}
+                      item={item}
+                      triggerKind={props.triggerKind}
+                      resolvedTheme={props.resolvedTheme}
+                      isActive={props.activeItemId === item.id}
+                      onHighlight={props.onHighlightedItemChange}
+                      onSelect={props.onSelect}
+                    />
+                  ))}
+                </CommandGroup>
               ))}
-            </CommandGroup>
           </CommandList>
         ) : (
           <div className="px-5 pt-3.5 pb-7">
@@ -214,6 +234,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       {props.item.type === "thread" ? (
         <MessagesSquareIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
       ) : null}
+      {props.item.type === "plugin" ? (
+        <BlocksIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
+      ) : null}
       {props.item.type === "environment" ? (
         <EnvironmentMachineIcon
           kind={props.item.machine}
@@ -247,6 +270,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
             kind={skillSourceKind}
             showSkillSuffix={props.triggerKind === "skill"}
           />
+        ) : null}
+        {props.item.type === "plugin" ? (
+          <Badge variant="outline">{props.item.plugin.source}</Badge>
         ) : null}
       </span>
     </CommandItem>

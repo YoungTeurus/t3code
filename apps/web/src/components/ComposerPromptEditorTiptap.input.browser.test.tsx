@@ -7,7 +7,7 @@ import {
   useRetainedContextPayloads,
 } from "./chat/composerContextUndo";
 
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill, ServerProviderPlugin } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { createElement, createRef, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -29,15 +29,39 @@ const babysit: ServerProviderSkill = {
   enabled: true,
 };
 
+it.each([false, true])(
+  "preserves a plugin mention through deletion and undo (rich text: %s)",
+  async (richTextEnabled) => {
+    const value = "Use [@plugin-TelegramEve](plugin://messages@personal) now";
+    await using screen = await mountEditor(value, richTextEnabled, [], undefined, [
+      { id: "messages@personal", name: "TelegramEve", source: "personal" },
+    ]);
+    const { editor } = screen;
+    await expect.element(screen.getByText("TelegramEve", { exact: true })).toBeVisible();
+    await act(async () => {
+      editor.view.focus();
+      editor.commands.setTextSelection({ from: 5, to: 6 });
+    });
+    await userEvent.keyboard("{Backspace}");
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("Use  now");
+    await act(async () => {
+      editor.commands.undo();
+    });
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(value);
+  },
+);
+
 function Composer({
   value,
   richTextEnabled,
   skills,
+  plugins,
   onChange,
 }: {
   value: string;
   richTextEnabled: boolean;
   skills: ReadonlyArray<ServerProviderSkill>;
+  plugins: ReadonlyArray<ServerProviderPlugin>;
   onChange?: ComposerPromptEditorProps["onChange"] | undefined;
 }) {
   const [prompt, setPrompt] = useState({ value, cursor: value.length });
@@ -49,6 +73,7 @@ function Composer({
       richTextEnabled={richTextEnabled}
       contextRecords={new Map()}
       skills={skills}
+      plugins={plugins}
       disabled={false}
       placeholder=""
       onChange={(...args) => {
@@ -65,9 +90,16 @@ function composer(
   richTextEnabled = true,
   skills: ReadonlyArray<ServerProviderSkill> = [],
   onChange?: ComposerPromptEditorProps["onChange"],
+  plugins: ReadonlyArray<ServerProviderPlugin> = [],
 ) {
   return (
-    <Composer value={value} richTextEnabled={richTextEnabled} skills={skills} onChange={onChange} />
+    <Composer
+      value={value}
+      richTextEnabled={richTextEnabled}
+      skills={skills}
+      plugins={plugins}
+      onChange={onChange}
+    />
   );
 }
 

@@ -19,7 +19,7 @@ import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapt
 import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
-  probeCodexSkillsForCwd,
+  probeCodexWorkspaceCapabilities,
 } from "../CodexProvider.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
@@ -309,15 +309,17 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
                   ),
                 ),
               onSuccess: (effective) =>
-                probeCodexSkillsForCwd({
+                probeCodexWorkspaceCapabilities({
                   binaryPath: effective.config.binaryPath,
                   homePath: effective.config.homePath,
                   launchArgs: effective.config.launchArgs,
                   cwd,
                   environment: effective.environment,
                 }).pipe(
-                  Effect.flatMap((skills) =>
-                    snapshot.getSnapshot.pipe(Effect.map((draft) => ({ ...draft, skills }))),
+                  Effect.flatMap((capabilities) =>
+                    snapshot.getSnapshot.pipe(
+                      Effect.map((draft) => ({ ...draft, ...capabilities })),
+                    ),
                   ),
                 ),
             }),

@@ -444,6 +444,10 @@ it.layer(
         checkedAt: "2026-03-25T00:01:00.000Z",
         slashCommands: [{ name: "project" }],
         skills: [{ name: "project", path: "/project/SKILL.md", enabled: true }],
+        pluginCatalog: {
+          status: "ready",
+          plugins: [{ id: "project@team", name: "Project", source: "team" }],
+        },
         optionDescriptors: [
           {
             id: "agent",
@@ -470,6 +474,7 @@ it.layer(
           checkedAt: scopedSnapshot.checkedAt,
           slashCommands: scopedSnapshot.slashCommands,
           skills: scopedSnapshot.skills,
+          pluginCatalog: scopedSnapshot.pluginCatalog,
           optionDescriptors: scopedSnapshot.optionDescriptors,
         },
       ]);
