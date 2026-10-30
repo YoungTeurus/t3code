@@ -1,4 +1,5 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../test/render";
@@ -54,8 +55,37 @@ vi.mock(import("../state/queries"), async (original) => ({
 }));
 
 import { requestSnoozeUntilThread, SnoozeUntilThreadDialogHost } from "./SnoozeUntilThreadDialog";
+import { SnoozeMenuButton } from "./sidebar/SidebarThreadRow";
 
 describe("Snooze until another thread", () => {
+  it("opens the picker from the sidebar clock and chooses the target", async () => {
+    let result!: Promise<unknown>;
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <SnoozeMenuButton
+            open={open}
+            onOpenChange={setOpen}
+            onSnooze={() => {}}
+            snoozeDependencySupported
+            timestampFormat="locale"
+            environmentId={environmentId}
+            onSnoozeUntilThread={() => {
+              result = requestSnoozeUntilThread(environmentId, source);
+            }}
+          />
+          <SnoozeUntilThreadDialogHost />
+        </>
+      );
+    }
+    await using _screen = await render(<Harness />);
+    await userEvent.click(page.getByRole("button", { name: "Snooze thread" }));
+    await userEvent.click(page.getByRole("menuitem", { name: "Until another thread…" }));
+    await userEvent.click(page.getByRole("button", { name: /Active target/ }));
+    await userEvent.click(page.getByRole("button", { name: "Snooze", exact: true }));
+    expect(await result).toEqual({ targetThreadId: target, until: "settled" });
+  });
   it("excludes settled threads by default and accepts a successful-run wait", async () => {
     await using _screen = await render(<SnoozeUntilThreadDialogHost />);
     let result!: Promise<unknown>;

@@ -86,6 +86,10 @@ The most common defect in this repo is a change that works on the path you teste
 - Stop what you started, by the PID you tracked. See rule 1.
 - Need a second checkout? `git worktree add` it next to this worktree, not in `/tmp`. Remove it when done.
 
+## Artifacts for a user
+
+- Unless the user specifies another base, fetch the fork's `main` and include its current commit before building. Preserve local changes while updating; report the build commit and any uncommitted changes. See [desktop artifacts](docs/operations/development.md#desktop-artifacts) for provenance and packaging.
+
 ## Test data
 
 An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:

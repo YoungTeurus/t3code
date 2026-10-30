@@ -3886,6 +3886,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE CASE WHEN json_valid(payload_json)
                   THEN json_type(payload_json, '$.delegatedCompletion.delivery') = 'object'
                   ELSE 0 END
+                UNION
+                SELECT task.thread_id FROM orchestration_v2_projection_subagents task
+                JOIN orchestration_v2_projection_runs run
+                  ON run.run_id = json_extract(task.payload_json, '$.runId')
+                 AND run.thread_id = task.thread_id
+                WHERE run.status = 'cancelled'
+                  AND json_extract(task.payload_json, '$.origin') = 'app_owned'
+                  AND json_extract(task.payload_json, '$.completionWake') = 'settled_only'
+                  AND task.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+                  AND json_extract(task.payload_json, '$.result') IS NOT NULL
+                  AND COALESCE(json_extract(task.payload_json, '$.completionDelivery.state'), 'pending') = 'pending'
               `;
             case "subagent-results":
               return sql`

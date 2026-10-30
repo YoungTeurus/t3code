@@ -877,6 +877,44 @@ const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRo
   return hash.toLowerCase();
 });
 
+export const resolveGitBuildProvenance = Effect.fn("resolveGitBuildProvenance")(function* (
+  repoRoot: string,
+) {
+  const git = (args: ReadonlyArray<string>) =>
+    spawnAndCollectOutput(ChildProcess.make("git", args, { cwd: repoRoot })).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "", stderr: "", exitCode: -1 })),
+    );
+  const [head, branch, status, main, shallow] = yield* Effect.all([
+    git(["rev-parse", "--verify", "HEAD"]),
+    git(["branch", "--show-current"]),
+    git(["status", "--porcelain", "--untracked-files=normal"]),
+    git(["rev-parse", "--verify", "refs/remotes/origin/main"]),
+    git(["rev-parse", "--is-shallow-repository"]),
+  ]);
+  const parseHash = (result: typeof head) =>
+    result.exitCode === 0 && /^[a-f0-9]{40,64}$/i.test(result.stdout.trim())
+      ? result.stdout.trim().toLowerCase()
+      : null;
+  const commit = parseHash(head);
+  const trackedMainCommit = parseHash(main);
+  const ancestor =
+    commit === null || trackedMainCommit === null
+      ? null
+      : yield* git(["merge-base", "--is-ancestor", trackedMainCommit, commit]);
+  return {
+    commit,
+    branch: branch.exitCode === 0 && branch.stdout.trim() ? branch.stdout.trim() : null,
+    dirty: status.exitCode === 0 ? status.stdout.trim().length > 0 : null,
+    trackedMainCommit,
+    trackedMainIsAncestor:
+      ancestor?.exitCode === 0
+        ? true
+        : ancestor?.exitCode === 1 && shallow.exitCode === 0 && shallow.stdout.trim() === "false"
+          ? false
+          : null,
+  };
+});
+
 const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -3636,6 +3674,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
+  const source = yield* resolveGitBuildProvenance(repoRoot);
   const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
   const stageRoot = yield* mkdir({
     prefix: `t3code-desktop-${options.platform}-stage-`,
@@ -4078,6 +4117,17 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       arch: options.arch,
     });
   }
+
+  const safeVersion = appVersion.replaceAll(/[^A-Za-z0-9._-]/g, "_");
+  const provenancePath = path.join(
+    options.outputDir,
+    `T3-Code-${safeVersion}-${options.arch}.provenance.json`,
+  );
+  yield* fs.writeFileString(
+    provenancePath,
+    `${JSON.stringify({ version: appVersion, platform: options.platform, arch: options.arch, reusedBundles: options.skipBuild, source }, null, 2)}\n`,
+  );
+  copiedArtifacts.push(provenancePath);
 
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),

@@ -3300,13 +3300,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               actionSweep?.keys.has(threadKey) ? actionSweep.action : null
                             }
                             snoozeWakeLabelText={
+                              section === "snoozed" &&
+                              thread.snoozeDependency == null &&
+                              thread.snoozedUntil != null
+                                ? snoozeWakeLabel(thread.snoozedUntil, {
+                                    now: new Date().toISOString(),
+                                  })
+                                : null
+                            }
+                            snoozeDependencyTitle={
                               section === "snoozed" && thread.snoozeDependency != null
-                                ? `Waiting for ${thread.snoozeDependency.until === "settled" ? "settlement" : "successful run"}: ${threadByKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.snoozeDependency.targetThreadId)))?.title ?? "thread"}`
-                                : section === "snoozed" && thread.snoozedUntil != null
-                                  ? snoozeWakeLabel(thread.snoozedUntil, {
-                                      now: new Date().toISOString(),
-                                    })
-                                  : null
+                                ? (threadByKey.get(
+                                    scopedThreadKey(
+                                      scopeThreadRef(
+                                        thread.environmentId,
+                                        thread.snoozeDependency.targetThreadId,
+                                      ),
+                                    ),
+                                  )?.title ?? "Thread")
+                                : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
                             isActive={routeRowThreadKey === threadKey}

@@ -13486,6 +13486,85 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               .withLock(
                 threadId,
                 Effect.gen(function* () {
+                  const pending = yield* projectionStore.getThreadRecords(threadId, [
+                    "runs",
+                    "subagents",
+                  ]);
+                  for (const candidate of pending.subagents) {
+                    const parent = pending.runs.find((run) => run.id === candidate.runId);
+                    if (
+                      candidate.origin !== "app_owned" ||
+                      candidate.completionWake !== "settled_only" ||
+                      !isTerminalDelegatedTaskStatus(candidate.status) ||
+                      candidate.result === null ||
+                      (candidate.completionDelivery?.state ?? "pending") !== "pending" ||
+                      parent?.status !== "cancelled"
+                    )
+                      continue;
+                    const fresh = yield* projectionStore.getThreadRecords(
+                      threadId,
+                      ["runs", "messages", "subagents", "providerTurns"],
+                      { messageRoles: ["user"] },
+                    );
+                    const task = fresh.subagents.find((row) => row.id === candidate.id);
+                    const parentRun = fresh.runs.find((run) => run.id === candidate.runId);
+                    if (
+                      task === undefined ||
+                      parentRun === undefined ||
+                      (task.completionDelivery?.state ?? "pending") !== "pending"
+                    )
+                      continue;
+                    const now = yield* DateTime.now;
+                    const plan = yield* planDelegatedCompletionDelivery({
+                      parentProjection: fresh,
+                      parentRun,
+                      task,
+                      updatedTask: task,
+                      now,
+                    });
+                    yield* writeSystemEvents([
+                      {
+                        type: "subagent.updated",
+                        threadId,
+                        runId: parentRun.id,
+                        nodeId: task.id,
+                        driver: task.driver,
+                        providerInstanceId: task.providerInstanceId,
+                        occurredAt: now,
+                        payload: plan.task,
+                      },
+                      ...(plan.parentRun === undefined
+                        ? []
+                        : [
+                            {
+                              type: "run.updated" as const,
+                              threadId,
+                              runId: plan.parentRun.id,
+                              ...(plan.parentRun.rootNodeId === null
+                                ? {}
+                                : { nodeId: plan.parentRun.rootNodeId }),
+                              providerInstanceId: plan.parentRun.providerInstanceId,
+                              occurredAt: now,
+                              payload: plan.parentRun,
+                            },
+                          ]),
+                      ...(plan.message === undefined
+                        ? []
+                        : [
+                            {
+                              type: "message.updated" as const,
+                              threadId,
+                              ...(plan.message.runId === null ? {} : { runId: plan.message.runId }),
+                              ...(plan.message.nodeId === null
+                                ? {}
+                                : { nodeId: plan.message.nodeId }),
+                              providerInstanceId: parentRun.providerInstanceId,
+                              occurredAt: now,
+                              payload: plan.message,
+                            },
+                          ]),
+                    ]);
+                  }
                   const projection = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
                   // Only the current delivery's run can settle its cohort; revisiting historical delivery runs repeatedly reloads the thread.
                   const openDeliveryMessageIds = new Set(
