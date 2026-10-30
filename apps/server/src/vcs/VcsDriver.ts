@@ -10,6 +10,9 @@ import type {
 } from "@t3tools/contracts";
 import { CheckpointRef } from "@t3tools/contracts";
 import * as VcsProcess from "./VcsProcess.ts";
+import type { VcsRepositoryOperations } from "./VcsOperations.ts";
+import type { WorkspaceProvider } from "../workspace/WorkspaceProvider.ts";
+import type * as GitVcsDriver from "./GitVcsDriver.ts";
 
 export interface VcsCaptureCheckpointInput {
   readonly cwd: string;
@@ -72,6 +75,9 @@ export class VcsDriver extends Context.Service<
       input: Omit<VcsProcess.VcsProcessInput, "command">,
     ) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
     readonly checkpoints: VcsCheckpointOps;
+    readonly operations?: VcsRepositoryOperations;
+    readonly workspace?: WorkspaceProvider;
+    readonly backend?: Partial<GitVcsDriver.GitVcsDriver["Service"]>;
     readonly detectRepository: (
       cwd: string,
     ) => Effect.Effect<VcsRepositoryIdentity | null, VcsError>;

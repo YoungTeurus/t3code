@@ -12,6 +12,10 @@ import { VcsUnsupportedOperationError } from "@t3tools/contracts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
+import * as ArcCli from "./ArcCli.ts";
+import * as ArcOperations from "./ArcOperations.ts";
+import * as ArcVcsDriver from "./ArcVcsDriver.ts";
+import * as ServerConfig from "../config.ts";
 
 const DETECTION_CACHE_CAPACITY = 2_048;
 // Detection costs three git processes per cwd; cached hits still stat disk, so TTL bounds only undetectable changes.
@@ -62,8 +66,13 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const projectConfig = yield* VcsProjectConfig.VcsProjectConfig;
   const git = yield* GitVcsDriver.makeVcsDriver;
+  const config = yield* ServerConfig.ServerConfig;
+  const arc = yield* ArcVcsDriver.makeArcVcsDriver(
+    path.join(config.stateDir, "arc-checkpoints"),
+  ).pipe(Effect.provide(ArcOperations.layer.pipe(Layer.provideMerge(ArcCli.layer))));
   const drivers: Partial<Record<VcsDriverKind, VcsDriver.VcsDriver["Service"]>> = {
     git,
+    arc,
   };
 
   const get: VcsDriverRegistry["Service"]["get"] = (kind) => {
@@ -107,7 +116,10 @@ export const make = Effect.gen(function* () {
       return yield* detectWithDriver(requestedKind, driver, input.cwd);
     }
 
-    return yield* detectWithDriver("git", git, input.cwd);
+    return (
+      (yield* detectWithDriver("git", git, input.cwd)) ??
+      (yield* detectWithDriver("arc", arc, input.cwd))
+    );
   });
 
   // Symlinks can put cwd outside root; then inspect cwd alone.

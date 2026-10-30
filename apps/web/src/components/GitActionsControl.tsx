@@ -167,14 +167,16 @@ function requestVcsStatusRefresh(
 }
 const RUNNING_SOURCE_CONTROL_ACTIONS = ["runStackedAction", "pull", "publishRepository"] as const;
 
-const PUBLISH_PROVIDER_OPTIONS = sourceControlClients.definitions.map((definition) => ({
-  value: definition.kind,
-  label: definition.pickerLabel,
-  description: definition.publishDescription,
-  pathPlaceholder: definition.repositoryPathHint,
-  definition,
-  Icon: sourceControlIcon(definition),
-}));
+const PUBLISH_PROVIDER_OPTIONS = sourceControlClients.definitions
+  .filter((definition) => definition.supportsRepositoryCreation !== false)
+  .map((definition) => ({
+    value: definition.kind,
+    label: definition.pickerLabel,
+    description: definition.publishDescription,
+    pathPlaceholder: definition.repositoryPathHint,
+    definition,
+    Icon: sourceControlIcon(definition),
+  }));
 
 function publishProviderOption(provider: SourceControlProviderKind) {
   return (

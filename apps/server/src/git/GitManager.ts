@@ -85,6 +85,8 @@ import { detachStackFrame } from "./detachStackFrame.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import { makeVcsBackend } from "../vcs/VcsBackend.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -648,7 +650,23 @@ function toPullRequestHeadRemoteInfo(pr: {
 }
 
 export const make = Effect.gen(function* () {
-  const gitCore = yield* GitVcsDriver.GitVcsDriver;
+  const gitCore = yield* makeVcsBackend;
+  const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
+  const nativeHandle = Effect.fn("GitManager.nativeHandle")(function* (cwd: string) {
+    const handle = yield* vcsRegistry.detect({ cwd }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            cwd,
+            operation: "GitManager.nativeHandle",
+            command: "vcs-route",
+            detail: "Could not detect the repository backend.",
+            cause,
+          }),
+      ),
+    );
+    return handle?.kind === "arc" ? handle : null;
+  });
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -780,8 +798,15 @@ export const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => ""),
   );
 
-  const readRecentCommitSubjects = (cwd: string) =>
-    gitCore
+  const readRecentCommitSubjects = Effect.fn("GitManager.readRecentCommitSubjects")(function* (
+    cwd: string,
+  ) {
+    const native = yield* nativeHandle(cwd);
+    if (native?.driver.operations)
+      return yield* native.driver.operations
+        .recentCommitSubjects(cwd)
+        .pipe(Effect.orElseSucceed(() => []));
+    return yield* gitCore
       .execute({
         operation: "GitManager.readRecentCommitSubjects",
         cwd,
@@ -796,6 +821,7 @@ export const make = Effect.gen(function* () {
         ),
         Effect.orElseSucceed(() => []),
       );
+  });
 
   const resolveStylePolicy = Effect.fn("GitManager.resolveStylePolicy")(function* (
     cwd: string,
@@ -1113,6 +1139,7 @@ export const make = Effect.gen(function* () {
 
     return {
       isRepo: details.isRepo,
+      ...(details.vcsKind ? { vcsKind: details.vcsKind } : {}),
       ...(hostingProvider ? { sourceControlProvider: hostingProvider } : {}),
       hasPrimaryRemote: details.hasOriginRemote,
       isDefaultRef: details.isDefaultBranch,
@@ -1437,6 +1464,12 @@ export const make = Effect.gen(function* () {
     cwd: string,
     branch: string | null,
   ) {
+    const native = yield* nativeHandle(cwd);
+    if (native) {
+      const remotes = yield* native.driver.listRemotes(cwd).pipe(Effect.orElseSucceed(() => null));
+      const url = remotes?.remotes.find((remote) => remote.isPrimary)?.url;
+      return url ? sourceControlDefinitions.recognizeRemote(url) : null;
+    }
     const preferredRemoteName =
       branch === null
         ? "origin"
@@ -1510,6 +1543,47 @@ export const make = Effect.gen(function* () {
     cwd: string,
     details: { branch: string; upstreamRef: string | null; remoteName?: string },
   ) {
+    const native = yield* nativeHandle(cwd);
+    if (native?.driver.operations) {
+      const state = yield* native.driver.operations.branchState(cwd, details.branch).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              cwd,
+              operation: "resolveBranchHeadContext",
+              command: "arc",
+              detail: "Could not read native branch state.",
+              cause,
+            }),
+        ),
+      );
+      const remotes = yield* native.driver.listRemotes(cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              cwd,
+              operation: "resolveBranchHeadContext",
+              command: "arc",
+              detail: "Could not identify the Arc repository.",
+              cause,
+            }),
+        ),
+      );
+      const url = remotes.remotes[0]?.url;
+      const key = url ? sourceControlDefinitions.repositoryKeyFromRemote(url) : null;
+      return {
+        localBranch: details.branch,
+        headBranch: state.publishedBranch,
+        headSelectors: [state.publishedBranch],
+        preferredHeadSelector: state.publishedBranch,
+        remoteName: "arcadia",
+        headRemoteUrlKey: key,
+        targetRemoteUrlKey: key,
+        headRepositoryNameWithOwner: null,
+        headRepositoryOwnerLogin: null,
+        isCrossRepository: false,
+      } satisfies BranchHeadContext;
+    }
     const remoteName =
       details.remoteName ??
       (yield* readConfigValueNullable(cwd, `branch.${details.branch}.remote`));
@@ -1733,6 +1807,7 @@ export const make = Effect.gen(function* () {
     },
   ) {
     const headContext = yield* resolveBranchHeadContext(cwd, details);
+    if (yield* nativeHandle(cwd)) return { headContext, lookup: details.upstreamRef !== null };
     if (details.upstreamRef === null) {
       const remoteName = yield* findPublishedBranchRemote(cwd, details.branch).pipe(
         Effect.orElseSucceed(() => null),
@@ -1775,6 +1850,22 @@ export const make = Effect.gen(function* () {
     cwd: string,
     headContext: Pick<BranchHeadContext, "headBranch" | "localBranch">,
   ) {
+    const native = yield* nativeHandle(cwd);
+    if (native?.driver.operations)
+      return (
+        (yield* native.driver.operations.branchState(cwd, headContext.localBranch).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                cwd,
+                operation: "isUnpublishedBranch",
+                command: "arc",
+                detail: "Could not read native branch state.",
+                cause,
+              }),
+          ),
+        )).upstream === null
+      );
     if (headContext.headBranch.length === 0) {
       return false;
     }
@@ -1974,6 +2065,14 @@ export const make = Effect.gen(function* () {
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
   ) {
+    if (yield* nativeHandle(cwd)) {
+      const configured = yield* gitCore.readBranchBase(cwd, branch);
+      const baseBranch =
+        configured === null || /^[0-9a-f]{40,64}$/i.test(configured)
+          ? "trunk"
+          : configured.replace(/^arcadia\//, "");
+      return { baseBranch, baseRef: baseBranch === "trunk" ? "arcadia/trunk" : baseBranch };
+    }
     const configuredRef = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`);
     if (configuredRef?.startsWith("refs/heads/") || configuredRef?.startsWith("refs/remotes/")) {
       const configuredBranch = yield* gitCore.resolveBranchName(cwd, configuredRef);
@@ -2454,6 +2553,37 @@ export const make = Effect.gen(function* () {
     branch: string,
     options: { readonly refresh: boolean; readonly freshGitState: boolean },
   ) {
+    const native = yield* nativeHandle(cacheCwd);
+    if (native?.driver.operations) {
+      const state = yield* native.driver.operations.branchState(cacheCwd, branch).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              cwd: cacheCwd,
+              operation: "branchPullRequest",
+              command: "arc",
+              detail: "Could not read native branch state.",
+              cause,
+            }),
+        ),
+      );
+      if (!state.exists || state.upstream === null) return null;
+      const key = prLookupCacheKey(cacheCwd, {
+        branch,
+        upstreamRef: state.upstream,
+        defaultBranch: "trunk",
+      });
+      if (options.refresh) yield* Cache.invalidate(prLookupCache, key);
+      const { latest } = yield* getPrLookup(key);
+      if (latest === null || (branch === "trunk" && latest.state !== "open")) return null;
+      return {
+        ...toStatusPr(latest),
+        closedAt: latest.closedAt ?? null,
+        mergedAt: latest.mergedAt ?? null,
+        headSha: latest.headSha ?? null,
+        repositoryKey: pullRequestRepositoryKey(latest.url),
+      };
+    }
     const remember = <E>(key: string, read: Effect.Effect<string | null, E>) =>
       rememberPrLookupGitState(cacheCwd, key, options.freshGitState, read);
     const remotes = yield* remember(
@@ -2680,6 +2810,31 @@ export const make = Effect.gen(function* () {
     cwd: string,
     pullRequestNumber: number,
   ) {
+    const native = yield* nativeHandle(cwd);
+    if (native?.driver.operations) {
+      const changes = yield* native.driver.operations
+        .localStatus({ cwd: native.repository.rootPath })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitCommandError({
+                cwd,
+                operation: "ensureNoTrackedChanges",
+                command: "arc",
+                detail: "Could not inspect checkout changes.",
+                cause,
+              }),
+          ),
+        );
+      if (changes.hasWorkingTreeChanges)
+        return yield* new GitManagerError({
+          cwd,
+          operation: "preparePullRequestThread",
+          detail:
+            "The Arc checkout has uncommitted changes. Commit them or open this PR in a workspace.",
+        });
+      return;
+    }
     const trackedChanges = yield* gitCore.execute({
       operation: "GitManager.preparePullRequestThread.trackedChanges",
       cwd,
@@ -2737,6 +2892,66 @@ export const make = Effect.gen(function* () {
         reference: normalizedReference,
       });
       const pullRequest = toResolvedPullRequest(pullRequestSummary);
+      const native = yield* nativeHandle(input.cwd);
+      if (native?.driver.operations && native.driver.workspace) {
+        const operations = native.driver.operations;
+        const convert = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitManagerError({
+                  cwd: input.cwd,
+                  operation: "preparePullRequestThread",
+                  detail: "Could not prepare the native Arc pull request checkout.",
+                  cause,
+                }),
+            ),
+          );
+        const head = pullRequestSummary.headSha;
+        if (!head || !/^[0-9a-f]{40,64}$/i.test(head))
+          return yield* new GitManagerError({
+            cwd: input.cwd,
+            operation: "preparePullRequestThread",
+            detail: "Arcanum did not provide an exact commit for the pull request head.",
+          });
+        yield* gitCore.resolveCommit({ cwd: input.cwd, revision: head });
+        const branch = `t3/pr-${pullRequest.number}`;
+        if (input.mode !== "local") {
+          const prepared = yield* convert(
+            native.driver.workspace.ensure({
+              cwd: input.cwd,
+              taskKey: `arcanum-pr-${pullRequest.number}`,
+              branch,
+              baseRevision: head,
+              requiredHead: head,
+              publishedBranch: pullRequestSummary.headRefName,
+            }),
+          );
+          if (prepared.action === "CREATED") yield* maybeRunSetupScript(prepared.cwd);
+          return {
+            pullRequest,
+            branch: prepared.branch,
+            worktreePath: prepared.cwd,
+            isOnPullRequestHead: prepared.isOnRequiredHead,
+          };
+        }
+        const current = yield* convert(operations.context(input.cwd));
+        if (current.branch !== branch) {
+          yield* ensureNoTrackedChanges(input.cwd, pullRequest.number);
+          const state = yield* convert(operations.branchState(input.cwd, branch));
+          if (!state.exists)
+            yield* gitCore.createBranch({ cwd: input.cwd, branch, startPoint: head });
+          yield* gitCore.switchRef({ cwd: input.cwd, refName: branch });
+        }
+        const after = yield* convert(operations.context(input.cwd));
+        yield* convert(operations.setUpstream(input.cwd, pullRequestSummary.headRefName));
+        return {
+          pullRequest,
+          branch: after.branch ?? branch,
+          worktreePath: null,
+          isOnPullRequestHead: after.head === head,
+        };
+      }
 
       if (input.mode === "local") {
         yield* ensureNoTrackedChanges(input.cwd, pullRequest.number);

@@ -9,6 +9,9 @@ import { ChildProcessSpawner } from "effect/process";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
+import * as ServerConfig from "../config.ts";
+import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { makeVcsBackend } from "./VcsBackend.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -25,6 +28,7 @@ describe("VcsDriverRegistry", () => {
   const makeDiskBackedLayer = (rootDir: string, calls: string[]) =>
     Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
       Layer.provide(NodeServices.layer),
+      Layer.provide(ServerConfig.ServerConfig.layerTest(rootDir, { prefix: "t3-arc-registry-" })),
       Layer.provide(
         Layer.mock(VcsProjectConfig.VcsProjectConfig)({
           resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
@@ -38,6 +42,24 @@ describe("VcsDriverRegistry", () => {
               const path = yield* Path.Path;
               const command = normalizeGitArgs(input.args).join(" ");
               calls.push(command);
+              if (input.command === "arc") {
+                let arcRoot: string | null = input.cwd;
+                while (arcRoot !== null && !(yield* fs.exists(path.join(arcRoot, ".arc", "HEAD"))))
+                  arcRoot = arcRoot === rootDir ? null : path.dirname(arcRoot);
+                if (arcRoot === null)
+                  return { ...processOutput(""), exitCode: ChildProcessSpawner.ExitCode(1) };
+                if (input.args[0] === "root") return processOutput(`${arcRoot}\n`);
+                if (input.args[0] === "info")
+                  return processOutput(
+                    JSON.stringify({
+                      repository: "arcadia",
+                      hash: "a".repeat(40),
+                      branch: "feature",
+                      mount_id: "mount-1",
+                    }),
+                  );
+                return processOutput("");
+              }
               let repoDir: string | null = input.cwd;
               while (repoDir !== null && !(yield* fs.exists(path.join(repoDir, ".git")))) {
                 repoDir = repoDir === rootDir ? null : path.dirname(repoDir);
@@ -120,6 +142,37 @@ describe("VcsDriverRegistry", () => {
         assert.equal((yield* registry.detect({ cwd: repoDir }))?.repository.rootPath, repoDir);
         assert.equal(calls.filter((call) => call === "rev-parse --is-inside-work-tree").length, 2);
       }).pipe(Effect.provide(makeDiskBackedLayer(repoDir, calls)));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("detects Arc below a mount and prefers a nested Git checkout", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-arc-registry-" });
+      const project = path.join(root, "project");
+      yield* fs.makeDirectory(path.join(root, ".arc"));
+      yield* fs.writeFileString(path.join(root, ".arc", "HEAD"), "fixture");
+      yield* fs.makeDirectory(project);
+      yield* Effect.gen(function* () {
+        const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+        const detected = yield* registry.detect({ cwd: project });
+        assert.equal(detected?.kind, "arc");
+        assert.equal(detected?.repository.rootPath, yield* fs.realPath(root));
+        const backend = yield* makeVcsBackend.pipe(
+          Effect.provide(
+            Layer.mock(GitVcsDriver.GitVcsDriver)({
+              execute: () => Effect.die("Arc must never execute Git argv"),
+            }),
+          ),
+        );
+        const rejected = yield* backend
+          .execute({ cwd: project, operation: "test", args: ["rev-parse", "HEAD"] })
+          .pipe(Effect.result);
+        assert.equal(rejected._tag, "Failure");
+        yield* fs.makeDirectory(path.join(project, ".git"));
+        assert.equal((yield* registry.detect({ cwd: project }))?.kind, "git");
+      }).pipe(Effect.provide(makeDiskBackedLayer(root, [])));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

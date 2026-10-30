@@ -125,6 +125,11 @@ interface VcsStatusChange {
   readonly event: VcsStatusStreamEvent;
 }
 
+export class VcsCheckoutIdentity extends Context.Reference<(cwd: string) => Effect.Effect<string>>(
+  "t3/vcs/VcsCheckoutIdentity",
+  { defaultValue: () => (cwd) => Effect.succeed(cwd) },
+) {}
+
 interface CachedValue<T> {
   readonly fingerprint: string;
   readonly value: T;
@@ -241,6 +246,11 @@ export const make = Effect.gen(function* () {
   const workflow = yield* GitWorkflowService.GitWorkflowService;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const fs = yield* FileSystem.FileSystem;
+  const checkoutIdentity = yield* VcsCheckoutIdentity;
+  const checkoutByCwd = new Map<string, string>();
+  const noteCheckout = Effect.fn("VcsStatusBroadcaster.noteCheckout")(function* (cwd: string) {
+    checkoutByCwd.set(cwd, yield* checkoutIdentity(cwd));
+  });
   const changesPubSub = yield* Effect.acquireRelease(
     PubSub.unbounded<VcsStatusChange>(),
     (pubsub) => PubSub.shutdown(pubsub),
@@ -313,6 +323,7 @@ export const make = Effect.gen(function* () {
   const loadLocalStatus = Effect.fn("VcsStatusBroadcaster.loadLocalStatus")(function* (
     cwd: string,
   ) {
+    yield* noteCheckout(cwd);
     const local = yield* workflow.localStatus({ cwd });
     return yield* updateCachedLocalStatus(cwd, local);
   });
@@ -361,8 +372,20 @@ export const make = Effect.gen(function* () {
 
   const refreshLocalStatusCore = Effect.fn("VcsStatusBroadcaster.refreshLocalStatusCore")(
     function* (cwd: string) {
+      yield* noteCheckout(cwd);
       yield* workflow.invalidateLocalStatus(cwd);
       const local = yield* workflow.localStatus({ cwd });
+      const identity = checkoutByCwd.get(cwd);
+      if (identity?.startsWith("arc:")) {
+        for (const [peer, key] of checkoutByCwd) {
+          if (peer === cwd || key !== identity) continue;
+          yield* workflow.invalidateStatus(peer);
+          yield* updateCachedLocalStatus(peer, yield* workflow.localStatus({ cwd: peer }), {
+            publish: true,
+          });
+          yield* updateCachedRemoteStatus(peer, null, { publish: true });
+        }
+      }
       return yield* updateCachedLocalStatus(cwd, local, { publish: true });
     },
   );

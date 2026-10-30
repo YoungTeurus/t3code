@@ -18,6 +18,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 export interface TestSourceControlHostOptions {
+  readonly stateDirectory?: string;
   readonly settings?: ServerSettings;
   readonly process?: Partial<SourceControlHost.SourceControlHost["Service"]["process"]>;
   readonly git?: Partial<SourceControlHost.SourceControlHost["Service"]["git"]>;
@@ -58,6 +59,7 @@ export const layer = (
       const update = (patch: ServerSettingsPatch) =>
         Ref.updateAndGet(settings, (current) => applyServerSettingsPatch(current, patch));
       const host = SourceControlHost.SourceControlHost.of({
+        ...(options.stateDirectory ? { stateDirectory: options.stateDirectory } : {}),
         settings: { get: Ref.get(settings), update },
         process: {
           run:

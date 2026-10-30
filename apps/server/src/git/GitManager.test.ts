@@ -593,6 +593,7 @@ function makeManager(input?: {
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
   gitConfigReads?: string[];
   gitCommands?: string[];
+  vcsProcess?: VcsProcess.VcsProcess["Service"];
   gitSpawnGate?: {
     readonly matches: (args: ReadonlyArray<string>) => boolean;
     readonly reached: Deferred.Deferred<void>;
@@ -665,7 +666,9 @@ function makeManager(input?: {
     : GitVcsDriver.layer;
   const layerVcsDriver = (watchesGitSpawns ? Layer.fresh(gitVcsDriver) : gitVcsDriver).pipe(
     Layer.provide(layerGitDriverSpawner),
-    Layer.provideMerge(VcsProcess.layer),
+    Layer.provideMerge(
+      input?.vcsProcess ? Layer.succeed(VcsProcess.VcsProcess, input.vcsProcess) : VcsProcess.layer,
+    ),
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(layerServerConfig),
   );
@@ -707,6 +710,7 @@ function makeManager(input?: {
     layerServerSettings,
   ).pipe(
     Layer.provideMerge(layerSourceControlRegistry),
+    Layer.provideMerge(VcsDriverRegistry.layer),
     Layer.provideMerge(layerVcsDriver),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -730,12 +734,119 @@ function makeManager(input?: {
 const asThreadId = (threadId: string) => threadId as ThreadId;
 
 const layerGitManagerTest = GitVcsDriver.layer.pipe(
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-git-manager-test-" })),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(NodeServices.layer),
 );
 
 it.layer(layerGitManagerTest)("GitManager", (it) => {
+  it.effect("opens an exact Arc PR head locally and preserves later local commits and edits", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* makeTempDir("t3-arc-manager-");
+      const root = yield* fs.realPath(directory);
+      yield* fs.makeDirectory(NodePath.join(root, ".arc"));
+      yield* fs.writeFileString(NodePath.join(root, ".arc", "HEAD"), "fixture");
+      yield* fs.makeDirectory(NodePath.join(root, "service"));
+      const prHead = "b".repeat(40);
+      const commits = new Map([["trunk", "a".repeat(40)]]);
+      const upstreams = new Map<string, string>();
+      let branch = "trunk";
+      let dirty = false;
+      const nativeCommands: string[] = [];
+      const vcsProcess: VcsProcess.VcsProcess["Service"] = {
+        run: (input) =>
+          Effect.sync(() => {
+            if (input.command === "git")
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(128),
+                stdout: "",
+                stderr: "fatal: not a git repository",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            expect(input.command).toBe("arc");
+            nativeCommands.push(input.args.join(" "));
+            const command = input.args[0];
+            if (command === "branch" && input.args[1] === "-u")
+              upstreams.set(input.args[3]!, input.args[2]!);
+            else if (command === "branch" && input.args[1] !== "--json")
+              commits.set(input.args[1]!, input.args[2]!);
+            if (command === "checkout") branch = input.args[1]!;
+            const stdout =
+              command === "root"
+                ? `${root}\n`
+                : command === "info"
+                  ? JSON.stringify({
+                      repository: "arcadia",
+                      hash: commits.get(branch),
+                      branch,
+                      user_login: "test",
+                      remote: upstreams.get(branch),
+                    })
+                  : command === "branch" && input.args[1] === "--json"
+                    ? JSON.stringify(
+                        [...commits.keys()].map((name) => ({
+                          name,
+                          local: true,
+                          current: name === branch,
+                        })),
+                      )
+                    : command === "log"
+                      ? JSON.stringify([{ commit: prHead, message: "PR head" }])
+                      : command === "status"
+                        ? JSON.stringify({
+                            status: dirty
+                              ? {
+                                  changed: [
+                                    { path: "service/file.txt", status: "modified", type: "file" },
+                                  ],
+                                }
+                              : {},
+                          })
+                        : "";
+            input.onStdoutChunk?.(Buffer.from(stdout));
+            return {
+              exitCode: ChildProcessSpawner.ExitCode(0),
+              stdout,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          }),
+      };
+      const { manager } = yield* makeManager({
+        vcsProcess,
+        providerScenario: {
+          pullRequest: {
+            number: 42,
+            title: "Arc change",
+            url: "https://a.yandex-team.ru/review/42",
+            baseRefName: "trunk",
+            headRefName: "users/test/task",
+            headSha: prHead,
+          },
+        },
+      });
+      const input = {
+        cwd: NodePath.join(root, "service"),
+        reference: "42",
+        mode: "local" as const,
+      };
+      const first = yield* manager.preparePullRequestThread(input);
+      expect(first.branch).toBe("t3/pr-42");
+      expect(first.worktreePath).toBeNull();
+      expect(first.isOnPullRequestHead).toBe(true);
+      expect(upstreams.get(first.branch)).toBe("arcadia/users/test/task");
+      commits.set(branch, "c".repeat(40));
+      dirty = true;
+      const reopened = yield* manager.preparePullRequestThread(input);
+      expect(reopened.isOnPullRequestHead).toBe(false);
+      expect(commits.get(branch)).toBe("c".repeat(40));
+      expect(dirty).toBe(true);
+      expect(nativeCommands.some((command) => /reset|clean|stash/.test(command))).toBe(false);
+    }),
+  );
   it.effect(
     "publishes local Git changes during a held PR lookup without caching its old branch",
     () =>

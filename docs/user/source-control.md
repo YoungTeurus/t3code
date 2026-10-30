@@ -1,6 +1,6 @@
 # Source control
 
-T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, and GitCafe to clone
+T3 Code supports Arc with Arcanum, and integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, and GitCafe to clone
 and publish repositories, create pull requests, and review changes.
 
 ## Review turn changes
@@ -15,6 +15,28 @@ against your base branch. Restore still returns the complete saved workspace.
 Install Git and configure authentication on the machine running your T3 Code server. For a remote
 environment, do this on the remote machine. After signing in, open **Settings → Source control**
 and choose **Rescan**.
+
+### Arc and Arcanum
+
+Install Arc and authenticate it on the machine running the T3 server. Open an existing mounted
+project directory below the Arcadia checkout root, then rescan **Settings → Source control**.
+Arcanum uses the token saved in Settings, `ARCANUM_TOKEN` / `ARC_TOKEN`, or the Arc CLI credential.
+Creating a PR through Arc requires the CLI and API to use the same account.
+
+Choose **Current checkout** to create or switch ordinary Arc branches in the existing mount.
+Projects on that mount share its active branch. Choose **New worktree** for an isolated task;
+this requires `ya tool arc-wt`. T3 acquires a workspace lease, preserves arc-wt setup hooks,
+and reuses the registered workspace after a restart. Automatic cleanup keeps Arc workspaces.
+
+Diffs, commits, push, PR links and review use the same controls as other repositories.
+Turn checkpoints stay outside the mount; restore affects the opened project and keeps the
+current branch HEAD. Open a service directory rather than the monorepo root for turn restore
+and file search. Existing Arcanum PRs can be opened with their `/review/<id>` URL.
+
+This version supports comments, line and range reviews, issue resolution and approval.
+Merge, request-changes, repository creation and cloning Arcadia are unavailable in T3;
+complete those operations in Arcanum or with the native tools. General PR comments remain
+in the activity timeline; only file comments are shown as review threads.
 
 ### GitHub
 

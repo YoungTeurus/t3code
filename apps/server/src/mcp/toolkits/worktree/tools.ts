@@ -28,14 +28,14 @@ const WorktreeToolFailure = Schema.Union([WorktreeMcpFailure, OrchestratorMcpFai
 
 const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   description:
-    "Move THIS thread into a new git worktree on a new branch. Runs the setup script by default. A separate agent in a worktree: `t3_thread_launch` with `workspaceStrategy`. Call last in your turn. The move ends the live session. `continuationPrompt` resumes work there next turn. Without it, the thread waits. The worktree stays after the thread is deleted. Fails if this thread has a worktree.",
+    "Move THIS thread into an isolated workspace on a new branch: a Git worktree or an Arc workspace through arc-wt. Runs the setup script by default. A separate agent in a workspace: `t3_thread_launch` with `workspaceStrategy`. Call last in your turn. The move ends the live session. `continuationPrompt` resumes work there next turn. Without it, the thread waits. The workspace stays after the thread is deleted. Fails if this thread has a workspace.",
   parameters: WorktreeMcpHandoffInput,
   success: WorktreeMcpHandoffResult,
   failure: WorktreeToolFailure,
   failureMode: "return",
   dependencies,
 })
-  .annotate(Tool.Title, "Hand off thread to a git worktree")
+  .annotate(Tool.Title, "Hand off thread to an isolated workspace")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false)

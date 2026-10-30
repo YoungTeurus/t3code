@@ -8,6 +8,7 @@ import type {
 import type * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
 import type { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
@@ -71,6 +72,7 @@ export type SourceControlDriverServices =
   | SourceControlRateLimit.SourceControlRateLimit
   | HttpClient.HttpClient
   | FileSystem.FileSystem
+  | Path.Path
   | Crypto.Crypto;
 
 export interface SourceControlDriver {

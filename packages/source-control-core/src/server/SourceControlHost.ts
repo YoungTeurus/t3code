@@ -65,6 +65,7 @@ export interface SourceControlGitRemoteBranch {
 export class SourceControlHost extends Context.Service<
   SourceControlHost,
   {
+    readonly stateDirectory?: string;
     readonly settings: {
       /** Read fresh on each call to pick up credential changes. */
       readonly get: Effect.Effect<ServerSettings, ServerSettingsError>;

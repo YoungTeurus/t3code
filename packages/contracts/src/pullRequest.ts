@@ -781,6 +781,8 @@ export const PullRequestReviewPosition = Schema.Union([
 export type PullRequestReviewPosition = typeof PullRequestReviewPosition.Type;
 
 export const PullRequestReviewCommentDraft = Schema.Struct({
+  clientId: Schema.optional(TrimmedNonEmptyString),
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyString),
   path: TrimmedNonEmptyString,
   /** GitLab needs both names for renamed-file comments; hosts using one path ignore this. */
   oldPath: Schema.optional(TrimmedNonEmptyString),
@@ -796,6 +798,7 @@ export type PullRequestReviewCommentDraft = typeof PullRequestReviewCommentDraft
 
 export const PullRequestSubmitReviewInput = Schema.Struct({
   ...PullRequestRef.fields,
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyString),
   verdict: PullRequestReviewVerdict,
   body: Schema.String.check(Schema.isMaxLength(65_536)),
   comments: Schema.Array(PullRequestReviewCommentDraft),

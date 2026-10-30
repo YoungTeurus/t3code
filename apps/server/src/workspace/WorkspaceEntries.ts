@@ -27,6 +27,7 @@ import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 
@@ -113,6 +114,15 @@ export class WorkspaceEntries extends Context.Service<
 
 /** Ignored files offered for copying; more than this is a build folder, not config. */
 const IGNORED_FILES_LIMIT = 200;
+const decodeArcIgnoredPaths = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      status: Schema.Struct({
+        ignored: Schema.optional(Schema.Array(Schema.Struct({ path: Schema.String }))),
+      }),
+    }),
+  ),
+);
 
 /** Paths sent to one `git check-ignore` call when labelling a folder's children. */
 const IGNORE_CHECK_CHUNK_SIZE = 1000;
@@ -151,11 +161,51 @@ export const make = Effect.gen(function* () {
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const workspaceSearchIndexes = yield* WorkspaceSearchIndex.WorkspaceSearchIndexMap;
   const vcsProcess = yield* VcsProcess.VcsProcess;
+  const vcsDrivers = yield* VcsDriverRegistry.VcsDriverRegistry;
 
   const normalizeWorkspaceRoot = Effect.fn("WorkspaceEntries.normalizeWorkspaceRoot")(function* (
     cwd: string,
   ): Effect.fn.Return<string, WorkspaceEntriesError> {
     return yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+  });
+  const indexedRepository = Effect.fn("WorkspaceEntries.indexedRepository")(function* (
+    cwd: string,
+  ) {
+    const toError = (cause: unknown) =>
+      new WorkspaceEntriesReadDirectoryError({ cwd, partialPath: "", parentPath: cwd, cause });
+    const repository = yield* vcsDrivers.detect({ cwd }).pipe(Effect.mapError(toError));
+    if (repository?.kind !== "arc") return null;
+    if (path.relative(repository.repository.rootPath, cwd) === "")
+      return yield* toError(
+        new Error("Open a project directory below the Arc mount root to search files."),
+      );
+    return repository;
+  });
+  const visiblePaths = Effect.fn("WorkspaceEntries.visiblePaths")(function* (
+    cwd: string,
+    repository: NonNullable<Effect.Success<ReturnType<typeof indexedRepository>>>,
+    paths: ReadonlyArray<string>,
+  ) {
+    return new Set(
+      yield* repository.driver
+        .filterIgnoredPaths(
+          cwd,
+          paths.filter(
+            (file) => !file.split("/").some((part) => part === ".arc" || part === ".git"),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceEntriesReadDirectoryError({
+                cwd,
+                partialPath: "",
+                parentPath: cwd,
+                cause,
+              }),
+          ),
+        ),
+    );
   });
 
   const refresh: WorkspaceEntries["Service"]["refresh"] = Effect.fn("WorkspaceEntries.refresh")(
@@ -253,9 +303,26 @@ export const make = Effect.gen(function* () {
       const normalizedQuery = normalizeSearchQuery(input.query, {
         trimLeadingPattern: /^[@./]+/,
       });
+      const repository = yield* indexedRepository(normalizedCwd);
       return yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
-        return yield* searchIndex.search(normalizedQuery, input.limit, input.kind, input.imageOnly);
+        const result = yield* searchIndex.search(
+          normalizedQuery,
+          repository ? Math.min(25_000, input.limit * 4) : input.limit,
+          input.kind,
+          input.imageOnly,
+        );
+        if (!repository) return result;
+        const visible = yield* visiblePaths(
+          normalizedCwd,
+          repository,
+          result.entries.map((entry) => entry.path),
+        );
+        const entries = result.entries.filter((entry) => visible.has(entry.path));
+        return {
+          entries: entries.slice(0, input.limit),
+          truncated: result.truncated || entries.length > input.limit,
+        };
       }).pipe(
         Effect.provide(
           workspaceSearchIndexes.get(
@@ -270,9 +337,23 @@ export const make = Effect.gen(function* () {
     "WorkspaceEntries.searchContents",
   )(function* (input) {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+    const repository = yield* indexedRepository(normalizedCwd);
     return yield* Effect.gen(function* () {
       const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
-      return yield* searchIndex.searchContents(input);
+      const result = yield* searchIndex.searchContents({
+        ...input,
+        limit: repository ? Math.min(4_000, input.limit * 4) : input.limit,
+      });
+      if (!repository) return result;
+      const visible = yield* visiblePaths(normalizedCwd, repository, [
+        ...new Set(result.matches.map((match) => match.path)),
+      ]);
+      const matches = result.matches.filter((match) => visible.has(match.path));
+      return {
+        ...result,
+        matches: matches.slice(0, input.limit),
+        truncated: result.truncated || matches.length > input.limit,
+      };
     }).pipe(
       Effect.provide(
         workspaceSearchIndexes.get(
@@ -312,15 +393,20 @@ export const make = Effect.gen(function* () {
               relative === ".." ||
               relative.startsWith(`..${path.sep}`) ||
               path.isAbsolute(relative) ||
-              relative.split(path.sep).includes(".git") ||
-              target.relativePath.split("/").includes(".git")
+              relative.split(path.sep).some((part) => part === ".git" || part === ".arc") ||
+              target.relativePath.split("/").some((part) => part === ".git" || part === ".arc")
             ) {
-              throw new Error("Directory must be inside the workspace and outside .git.");
+              throw new Error("Directory must be inside the workspace and outside VCS metadata.");
             }
             const children = await NodeFSP.readdir(directory, { withFileTypes: true });
             return {
               entries: children.flatMap((child): ProjectEntry[] => {
-                if (child.name === ".git" || (!child.isDirectory() && !child.isFile())) return [];
+                if (
+                  child.name === ".git" ||
+                  child.name === ".arc" ||
+                  (!child.isDirectory() && !child.isFile())
+                )
+                  return [];
                 return [
                   {
                     path: target.relativePath ? `${target.relativePath}/${child.name}` : child.name,
@@ -334,6 +420,25 @@ export const make = Effect.gen(function* () {
           },
           catch: toError,
         });
+        const repository = yield* vcsDrivers
+          .detect({ cwd: normalizedCwd })
+          .pipe(Effect.mapError(toError));
+        if (repository?.kind === "arc") {
+          const visible = new Set(
+            yield* repository.driver
+              .filterIgnoredPaths(
+                normalizedCwd,
+                entries.map((entry) => entry.path),
+              )
+              .pipe(Effect.mapError(toError)),
+          );
+          return {
+            entries: entries.map((entry) =>
+              visible.has(entry.path) ? entry : { ...entry, ignored: true },
+            ),
+            truncated: false,
+          };
+        }
         // stdin avoids argument limits; ignore classification is optional without git/repositories.
         const checkIgnore = (paths: ReadonlyArray<string>) =>
           vcsProcess
@@ -377,9 +482,17 @@ export const make = Effect.gen(function* () {
           truncated: false,
         };
       }
+      const repository = yield* indexedRepository(normalizedCwd);
       return yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
-        return yield* searchIndex.list();
+        const result = yield* searchIndex.list();
+        if (!repository) return result;
+        const visible = yield* visiblePaths(
+          normalizedCwd,
+          repository,
+          result.entries.map((entry) => entry.path),
+        );
+        return { ...result, entries: result.entries.filter((entry) => visible.has(entry.path)) };
       }).pipe(
         Effect.provide(
           workspaceSearchIndexes.get(
@@ -394,34 +507,88 @@ export const make = Effect.gen(function* () {
     "WorkspaceEntries.listIgnoredFiles",
   )(function* (input) {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+    const toError = (cause: unknown) =>
+      new WorkspaceEntriesReadDirectoryError({
+        cwd: normalizedCwd,
+        partialPath: "",
+        parentPath: normalizedCwd,
+        cause,
+      });
+    const repository = yield* vcsDrivers
+      .detect({ cwd: normalizedCwd })
+      .pipe(Effect.mapError(toError));
+    const nativePaths = yield* Effect.gen(function* () {
+      if (repository?.kind !== "arc") return null;
+      const scope = path.relative(repository.repository.rootPath, normalizedCwd);
+      if (scope === "") return { paths: [], truncated: true };
+      const result = yield* repository.driver
+        .execute({
+          operation: "WorkspaceEntries.listIgnoredFiles",
+          cwd: repository.repository.rootPath,
+          args: [
+            "status",
+            "--json",
+            "--ignored",
+            "-u",
+            "normal",
+            "--no-ahead-behind",
+            "--no-sync-status",
+            "--no-bisect-status",
+            "--",
+            scope,
+          ],
+          timeoutMs: 10_000,
+          maxOutputBytes: 4 * 1024 * 1024,
+        })
+        .pipe(Effect.mapError(toError));
+      if (result.stdoutTruncated || result.exitCode !== 0)
+        return yield* toError(new Error("Arc ignored-file listing failed or was truncated."));
+      const status = yield* decodeArcIgnoredPaths(result.stdout).pipe(Effect.mapError(toError));
+      const paths: string[] = [];
+      for (const entry of status.status.ignored ?? []) {
+        if (entry.path.endsWith("/")) continue;
+        const relative = path.relative(
+          normalizedCwd,
+          path.resolve(repository.repository.rootPath, entry.path),
+        );
+        if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+          return yield* toError(new Error("Arc returned an ignored path outside the project."));
+        paths.push(relative);
+      }
+      return { paths: paths.toSorted(), truncated: false };
+    });
     // `--directory` reports a folder holding nothing but ignored files as one
     // `name/` entry, which is how `node_modules` and build output drop out.
-    const result = yield* vcsProcess
-      .run({
-        operation: "WorkspaceEntries.listIgnoredFiles",
-        command: "git",
-        args: [
-          "-c",
-          "core.fsmonitor=false",
-          "ls-files",
-          "--others",
-          "--ignored",
-          "--exclude-standard",
-          "--directory",
-          "--no-empty-directory",
-          "-z",
-        ],
-        cwd: normalizedCwd,
-        allowNonZeroExit: true,
-        timeoutMs: 10_000,
-        maxOutputBytes: 4 * 1024 * 1024,
-      })
-      .pipe(Effect.orElseSucceed(() => undefined));
-    if (!result || result.exitCode !== 0) return { files: [], truncated: false };
-    const paths = result.stdout
-      .split("\0")
-      .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
-      .toSorted();
+    const result = nativePaths
+      ? undefined
+      : yield* vcsProcess
+          .run({
+            operation: "WorkspaceEntries.listIgnoredFiles",
+            command: "git",
+            args: [
+              "-c",
+              "core.fsmonitor=false",
+              "ls-files",
+              "--others",
+              "--ignored",
+              "--exclude-standard",
+              "--directory",
+              "--no-empty-directory",
+              "-z",
+            ],
+            cwd: normalizedCwd,
+            allowNonZeroExit: true,
+            timeoutMs: 10_000,
+            maxOutputBytes: 4 * 1024 * 1024,
+          })
+          .pipe(Effect.orElseSucceed(() => undefined));
+    if (!nativePaths && (!result || result.exitCode !== 0)) return { files: [], truncated: false };
+    const paths =
+      nativePaths?.paths ??
+      result!.stdout
+        .split("\0")
+        .filter((entry) => entry.length > 0 && !entry.endsWith("/"))
+        .toSorted();
     const files = yield* Effect.promise(() =>
       Promise.all(
         paths.slice(0, IGNORED_FILES_LIMIT).map(async (relativePath) => {
@@ -435,7 +602,7 @@ export const make = Effect.gen(function* () {
     );
     return {
       files: files.filter((file) => file !== null),
-      truncated: paths.length > IGNORED_FILES_LIMIT,
+      truncated: (nativePaths?.truncated ?? false) || paths.length > IGNORED_FILES_LIMIT,
     };
   });
 
@@ -444,5 +611,6 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(WorkspaceEntries, make).pipe(
   Layer.provide(WorkspaceSearchIndex.WorkspaceSearchIndexMap.layer),
+  Layer.provide(VcsDriverRegistry.layer),
   Layer.provide(VcsProcess.layer),
 );
