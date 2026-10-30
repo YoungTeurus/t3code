@@ -50,7 +50,12 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  useThreadShell,
+  readThreadShell,
+  waitForThreadShell,
+} from "../../state/entities";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -522,37 +527,64 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     : null;
   // The relative times read the clock; nowMinute re-renders them on the minute.
   const snoozedUntil = activeThreadShell?.snoozedUntil ?? null;
+  const dependency = activeThreadShell?.snoozeDependency ?? null;
+  const dependencyTarget = useThreadShell(
+    dependency === null ? null : scopeThreadRef(environmentId, dependency.targetThreadId),
+  );
   const settledAt = activeThreadShell?.settledAt ?? null;
   // Same rounding as the sidebar's snoozed shelf, so both read the same hour.
   const snoozeWake = snoozedUntil
     ? snoozeWakeLabel(snoozedUntil, { now: `${nowMinute}:00.000Z` })
     : null;
-  const threadStatusLine = activeThreadSnoozed ? (
-    <ThreadStatusLine
-      icon={<AlarmClockIcon />}
-      label={snoozeWake && snoozeWake !== "now" ? `Snoozed, ${snoozeWake} left` : "Snoozed"}
-      clockMinute={nowMinute}
-      actionLabel={isUnsnoozing ? "Waking..." : "Wake now"}
-      actionDisabled={!canOperateThread || isUnsnoozing}
-      onAction={() => void handleUnsnoozeActiveThreadStable()}
-    />
-  ) : activeThreadSettled ? (
-    <ThreadStatusLine
-      icon={<CheckCircle2Icon />}
-      label={settledAt ? `Settled ${formatRelativeTimeLabel(settledAt)}` : "Settled"}
-      clockMinute={nowMinute}
-      actionLabel={isUnsettling ? "Un-settling..." : "Un-settle"}
-      actionDisabled={!canOperateThread || isUnsettling}
-      onAction={() => void handleUnsettleActiveThreadStable()}
-    />
-  ) : activeThreadWokeVisible ? (
-    <ThreadStatusLine
-      icon={<AlarmClockIcon />}
-      label="Woke from snooze"
-      actionLabel="Dismiss"
-      onAction={acknowledgeActiveThreadWokeStable}
-    />
-  ) : null;
+  const threadStatusLine =
+    activeThreadSnoozed || dependency !== null ? (
+      <ThreadStatusLine
+        icon={<AlarmClockIcon />}
+        label={
+          dependency
+            ? `Waiting for ${dependency.until === "settled" ? "settlement" : "a successful run"}:`
+            : snoozeWake && snoozeWake !== "now"
+              ? `Snoozed, ${snoozeWake} left`
+              : "Snoozed"
+        }
+        {...(dependency
+          ? {
+              relatedLabel: dependencyTarget?.title ?? "Thread",
+              onRelated: () => void onOpenRelatedThreadStable(dependency.targetThreadId),
+            }
+          : {})}
+        clockMinute={nowMinute}
+        actionLabel={
+          isUnsnoozing
+            ? "Waking..."
+            : dependency && !activeThreadSnoozed
+              ? "Cancel wait"
+              : "Wake now"
+        }
+        actionDisabled={!canOperateThread || isUnsnoozing}
+        onAction={() => void handleUnsnoozeActiveThreadStable()}
+      />
+    ) : activeThreadSettled ? (
+      <ThreadStatusLine
+        icon={<CheckCircle2Icon />}
+        label={settledAt ? `Settled ${formatRelativeTimeLabel(settledAt)}` : "Settled"}
+        clockMinute={nowMinute}
+        actionLabel={isUnsettling ? "Un-settling..." : "Un-settle"}
+        actionDisabled={!canOperateThread || isUnsettling}
+        onAction={() => void handleUnsettleActiveThreadStable()}
+      />
+    ) : activeThreadWokeVisible ? (
+      <ThreadStatusLine
+        icon={<AlarmClockIcon />}
+        label={
+          activeThreadShell?.snoozeDependencyWake
+            ? `Waiting ended: ${activeThreadShell.snoozeDependencyWake.reason}`
+            : "Woke from snooze"
+        }
+        actionLabel="Dismiss"
+        onAction={acknowledgeActiveThreadWokeStable}
+      />
+    ) : null;
   const toastThreadActionFailure =
     (title: string) => (result: AtomCommandResult<unknown, unknown>) => {
       if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;

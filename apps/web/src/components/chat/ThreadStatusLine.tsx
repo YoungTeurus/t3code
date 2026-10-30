@@ -8,6 +8,8 @@ export function ThreadStatusLine(props: {
   readonly actionLabel: string;
   readonly actionDisabled?: boolean;
   readonly onAction: () => void;
+  readonly relatedLabel?: string;
+  readonly onRelated?: () => void;
   // Set for clock-dependent labels to trigger updates.
   readonly clockMinute?: string;
 }) {
@@ -18,6 +20,9 @@ export function ThreadStatusLine(props: {
     >
       {props.icon}
       <span className="min-w-0 truncate">{props.label}</span>
+      {props.relatedLabel && props.onRelated ? (
+        <InlineButton onClick={props.onRelated}>{props.relatedLabel}</InlineButton>
+      ) : null}
       <span aria-hidden="true">·</span>
       <InlineButton disabled={props.actionDisabled} onClick={props.onAction}>
         {props.actionLabel}

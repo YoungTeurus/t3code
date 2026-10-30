@@ -8,6 +8,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,6 +24,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -83,6 +85,14 @@ type LaunchedWith = Pick<
 
 /** The thread the box launches for the task, which the test finishes. */
 interface BoxThread {
+  readonly approval: Ref.Ref<{
+    readonly version: 1;
+    readonly snapshotSequence: number;
+    readonly lastAttentionSequence: number;
+    readonly pendingApprovalCount: number;
+    readonly available: boolean;
+  }>;
+  readonly approvalChanged: Deferred.Deferred<void>;
   readonly launched: Ref.Ref<ThreadId | null>;
   /** The link session that launched it, as the box stamps it. */
   readonly linkOrigin: Ref.Ref<{ readonly sessionId: string; readonly label: string } | null>;
@@ -131,6 +141,14 @@ interface BoxThread {
 
 const makeBoxThread = Effect.gen(function* () {
   return {
+    approval: yield* Ref.make({
+      version: 1 as const,
+      snapshotSequence: 0,
+      lastAttentionSequence: 0,
+      pendingApprovalCount: 0,
+      available: true,
+    }),
+    approvalChanged: yield* Deferred.make<void>(),
     launched: yield* Ref.make<ThreadId | null>(null),
     linkOrigin: yield* Ref.make<{ readonly sessionId: string; readonly label: string } | null>(
       null,
@@ -249,6 +267,13 @@ const boxToolkitLayer = (thread: BoxThread) => {
       }
     });
   const layerBoxThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    approvalAttention: () => Ref.get(thread.approval),
+    streamStoredEventsFrom: () =>
+      Stream.fromEffect(Deferred.await(thread.approvalChanged)).pipe(
+        Stream.map(
+          () => ({ event: { type: "runtime-request.updated" } }) as OrchestrationV2StoredEvent,
+        ),
+      ),
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
@@ -787,6 +812,132 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
+it.effect("checks the remote approval snapshot before snoozing the parent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      yield* delegateToBox(a);
+      yield* Ref.set(thread.approval, {
+        version: 1 as const,
+        snapshotSequence: 1,
+        lastAttentionSequence: 1,
+        pendingApprovalCount: 1,
+        available: true,
+      });
+      const snooze = (commandId: string) =>
+        a.orchestrator.dispatch({
+          type: "thread.snooze",
+          commandId: CommandId.make(commandId),
+          threadId: parentThreadId,
+          snoozedUntil: "2099-01-01T00:00:00.000Z",
+        });
+      const blocked = yield* snooze("snooze:remote-pending").pipe(Effect.result);
+      expect(blocked._tag).toBe("Failure");
+      yield* Ref.set(thread.approval, {
+        version: 1 as const,
+        snapshotSequence: 2,
+        lastAttentionSequence: 1,
+        pendingApprovalCount: 0,
+        available: true,
+      });
+      yield* snooze("snooze:remote-clear");
+      expect((yield* a.orchestrator.getThreadShell(parentThreadId))?.snoozedUntil).not.toBeNull();
+      yield* Ref.set(thread.approval, {
+        version: 1 as const,
+        snapshotSequence: 2,
+        lastAttentionSequence: 1,
+        pendingApprovalCount: 0,
+        available: false,
+      });
+      expect((yield* snooze("snooze:remote-clear")).replayed).toBe(true);
+      expect((yield* snooze("snooze:remote-unavailable").pipe(Effect.result))._tag).toBe("Failure");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("shows a waiting parent when the remote task reports approval before finishing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const task = yield* delegateToBox(a);
+      const target = ThreadId.make("thread:remote-snooze-target");
+      yield* a.orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create:remote-snooze-target"),
+        threadId: target,
+        projectId: ProjectId.make("project:laptop"),
+        title: "Target",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* a.orchestrator.dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make("snooze:remote-parent"),
+        threadId: parentThreadId,
+        targetThreadId: target,
+        until: "settled",
+      });
+      expect(
+        (yield* a.orchestrator.getThreadShell(parentThreadId))?.snoozeDependency?.visibility,
+      ).toBe("hidden");
+      const afterSequence = yield* a.orchestrator.getThreadEventSequence(parentThreadId);
+      const shown = yield* a.orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentThreadId,
+          afterSequence,
+          eventType: "thread.metadata-updated",
+        })
+        .pipe(
+          Stream.filter(
+            (event) =>
+              event.event.type === "thread.metadata-updated" &&
+              event.event.payload.snoozeDependency?.visibility === "visible",
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* Ref.set(thread.approval, {
+        version: 1 as const,
+        snapshotSequence: 1,
+        lastAttentionSequence: 1,
+        pendingApprovalCount: 1,
+        available: true,
+      });
+      yield* Deferred.succeed(thread.approvalChanged, undefined);
+      expect(Option.isSome(yield* Fiber.join(shown))).toBe(true);
+      expect(yield* Ref.get(thread.status)).toBe("running");
+      yield* Ref.set(thread.reply, "done");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, task.taskId);
+      expect(
+        (yield* a.orchestrator.getThreadShell(parentThreadId))?.snoozeDependency?.visibility,
+      ).toBe("visible");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -954,6 +1105,79 @@ it.effect("refuses worktree isolation for a task there before launching anything
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result.content)).toContain("isolation");
       expect(yield* Ref.get(thread.launched)).toBeNull();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("recovers remote approval attention that opened and closed during a restart", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const before = yield* makeLaptop(database, offers);
+          yield* linkTo(before.links, b, "full-access");
+          yield* seedParent(before);
+          yield* delegateToBox(before);
+          const target = ThreadId.make("thread:restart-remote-target");
+          yield* before.orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("create:restart-remote-target"),
+            threadId: target,
+            projectId: ProjectId.make("project:laptop"),
+            title: "Target",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* before.orchestrator.dispatch({
+            type: "thread.snooze-until-thread",
+            commandId: CommandId.make("snooze:restart-remote"),
+            threadId: parentThreadId,
+            targetThreadId: target,
+            until: "settled",
+          });
+        }),
+      );
+      yield* Ref.set(thread.approval, {
+        version: 1 as const,
+        snapshotSequence: 2,
+        lastAttentionSequence: 1,
+        pendingApprovalCount: 0,
+        available: true,
+      });
+      const after = yield* makeLaptop(database, offers);
+      yield* linkTo(after.links, b, "full-access");
+      const sequence = yield* after.orchestrator.getThreadEventSequence(parentThreadId);
+      const shown = yield* after.orchestrator
+        .streamStoredEventsFrom({
+          threadId: parentThreadId,
+          afterSequence: sequence,
+          eventType: "thread.metadata-updated",
+        })
+        .pipe(
+          Stream.filter(
+            (event) =>
+              event.event.type === "thread.metadata-updated" &&
+              event.event.payload.snoozeDependency?.visibility === "visible",
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* after.remote.start();
+      expect(Option.isSome(yield* Fiber.join(shown))).toBe(true);
+      expect(
+        (yield* after.orchestrator.getThreadShell(parentThreadId))?.snoozeDependency?.visibility,
+      ).toBe("visible");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

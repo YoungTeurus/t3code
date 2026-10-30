@@ -11,6 +11,7 @@ import * as OpenApi from "effect/http-api/OpenApi";
 import {
   DpopFailureReason,
   EnvironmentId,
+  IsoDateTime,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -127,6 +128,9 @@ export const RelayAgentActivityState = Schema.Struct({
   modelTitle: TrimmedNonEmptyString,
   updatedAt: TrimmedNonEmptyString,
   deepLink: TrimmedNonEmptyString,
+  snoozeWake: Schema.optional(
+    Schema.Struct({ eventId: TrimmedNonEmptyString, occurredAt: IsoDateTime }),
+  ),
 });
 export type RelayAgentActivityState = typeof RelayAgentActivityState.Type;
 
@@ -140,6 +144,9 @@ export const RelayAgentActivityAggregateRow = Schema.Struct({
   status: TrimmedNonEmptyString,
   updatedAt: TrimmedNonEmptyString,
   deepLink: TrimmedNonEmptyString,
+  snoozeWake: Schema.optional(
+    Schema.Struct({ eventId: TrimmedNonEmptyString, occurredAt: IsoDateTime }),
+  ),
 });
 export type RelayAgentActivityAggregateRow = typeof RelayAgentActivityAggregateRow.Type;
 
@@ -998,6 +1005,9 @@ export type RelayPublishResponse = typeof RelayPublishResponse.Type;
 export const RelayHealthResponse = Schema.Struct({
   ok: Schema.Boolean,
   service: Schema.Literal("relay"),
+  capabilities: Schema.optional(
+    Schema.Struct({ snoozeWakeNotifications: Schema.optional(Schema.Boolean) }),
+  ),
 });
 export type RelayHealthResponse = typeof RelayHealthResponse.Type;
 

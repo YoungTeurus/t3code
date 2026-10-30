@@ -507,6 +507,116 @@ describe("ApnsDeliveries", () => {
     },
   );
 
+  it.effect("queues a wake push once with the completion notification preference", () => {
+    const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
+    const queuedJobs: Array<SignedApnsDeliveryJob> = [];
+    const wakeAggregate: RelayAgentActivityAggregateState = {
+      ...aggregate,
+      activities: [
+        {
+          ...aggregate.activities[0]!,
+          snoozeWake: { eventId: "wake-1", occurredAt: state.updatedAt },
+        },
+      ],
+    };
+    const phone = {
+      ...target,
+      push_token: "apns-device-token",
+      activity_push_token: null,
+      push_to_start_token: null,
+      remote_started_at: null,
+    };
+    return Effect.gen(function* () {
+      const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
+      const first = yield* deliveries.sendForTarget({
+        target: { ...phone, last_aggregate_json: JSON.stringify(aggregate) },
+        aggregate: wakeAggregate,
+        nowMs: 5_000,
+      });
+      expect(first?.kind).toBe("push_notification");
+      expect(queuedJobs).toMatchObject([{ payload: { notification: { body: "Woke: Project" } } }]);
+      const duplicate = yield* deliveries.sendForTarget({
+        target: { ...phone, last_aggregate_json: JSON.stringify(wakeAggregate) },
+        aggregate: wakeAggregate,
+        nowMs: 5_000,
+      });
+      expect(duplicate).toBeNull();
+      const disabled = yield* deliveries.sendForTarget({
+        target: {
+          ...phone,
+          preferences_json: JSON.stringify({
+            liveActivitiesEnabled: true,
+            notificationsEnabled: true,
+            notifyOnApproval: true,
+            notifyOnInput: true,
+            notifyOnCompletion: false,
+            notifyOnFailure: true,
+          }),
+        },
+        aggregate: wakeAggregate,
+        nowMs: 5_000,
+      });
+      expect(disabled).toBeNull();
+      const approval = {
+        ...aggregate,
+        activities: [
+          {
+            ...aggregate.activities[0]!,
+            phase: "waiting_for_approval" as const,
+            status: "Approval",
+          },
+        ],
+      };
+      const approvalWake = {
+        ...approval,
+        activities: [
+          {
+            ...approval.activities[0]!,
+            snoozeWake: { eventId: "wake-approval", occurredAt: state.updatedAt },
+          },
+        ],
+      };
+      const disabledApproval = yield* deliveries.sendForTarget({
+        target: {
+          ...phone,
+          last_aggregate_json: JSON.stringify(approval),
+          preferences_json: JSON.stringify({
+            liveActivitiesEnabled: true,
+            notificationsEnabled: true,
+            notifyOnApproval: true,
+            notifyOnInput: true,
+            notifyOnCompletion: false,
+            notifyOnFailure: true,
+          }),
+        },
+        aggregate: approvalWake,
+        nowMs: 5_000,
+      });
+      expect(disabledApproval).toBeNull();
+      const nextWake = {
+        ...wakeAggregate,
+        activities: [
+          wakeAggregate.activities[0]!,
+          {
+            ...aggregate.activities[0]!,
+            threadId: ThreadId.make("thread-2"),
+            threadTitle: "Second",
+            snoozeWake: { eventId: "wake-2", occurredAt: state.updatedAt },
+          },
+        ],
+      };
+      const second = yield* deliveries.sendForTarget({
+        target: { ...phone, last_aggregate_json: JSON.stringify(wakeAggregate) },
+        aggregate: nextWake,
+        nowMs: 5_000,
+      });
+      expect(second?.kind).toBe("push_notification");
+      expect(queuedJobs.at(-1)).toMatchObject({
+        payload: { notification: { title: "Second", body: "Woke: Project" } },
+      });
+    }).pipe(Effect.provide(layerFor({ attempts, queuedJobs })));
+  });
+
   it.effect("queues bounded alert notification payloads", () => {
     const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
     const queuedJobs: Array<SignedApnsDeliveryJob> = [];

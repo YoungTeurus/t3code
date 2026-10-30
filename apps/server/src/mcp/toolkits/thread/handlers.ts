@@ -338,6 +338,29 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       }
       let command: OrchestrationV2Command;
       switch (input.action) {
+        case "snooze-until-thread": {
+          if (input.targetThreadId === undefined || input.until === undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "snooze-until-thread requires targetThreadId and until.",
+            });
+          }
+          yield* readThread(input.targetThreadId);
+          const existing = projection.thread.snoozeDependency;
+          const expectedDependencyId =
+            input.expectedDependencyId ??
+            (existing?.targetThreadId === input.targetThreadId && existing.until === input.until
+              ? existing.dependencyId
+              : undefined);
+          command = {
+            ...common,
+            type: "thread.snooze-until-thread",
+            targetThreadId: input.targetThreadId,
+            until: input.until,
+            ...(expectedDependencyId === undefined ? {} : { expectedDependencyId }),
+          };
+          break;
+        }
         case "snooze":
           if (input.snoozedUntil === undefined) {
             return yield* new OrchestratorMcpFailure({

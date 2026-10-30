@@ -28,6 +28,8 @@ import { isExpiredAgentActivityState, notificationForActivity } from "./agentAct
 import {
   alertForActivityRows,
   attentionTransitionRows,
+  wakeTransitionRows,
+  isFreshTerminalNotification,
   terminalTransitionRows,
   shouldAlertForActivity,
 } from "./agentActivityAlerts.ts";
@@ -64,9 +66,20 @@ export function androidAlertForState(
   nowMs: number,
 ) {
   if (!shouldAlertForActivity({ ...state, preferences, nowMs })) return null;
-  const notification = notificationForActivity({ ...state, status: statusForPhase(state.phase) });
+  const freshWake =
+    state.snoozeWake !== undefined &&
+    isFreshTerminalNotification(state.snoozeWake.occurredAt, nowMs);
+  const notification = notificationForActivity({
+    ...state,
+    status: freshWake ? "Woke" : statusForPhase(state.phase),
+  });
   return {
-    alert_id: JSON.stringify([state.environmentId, state.threadId, state.phase, state.updatedAt]),
+    alert_id: JSON.stringify([
+      state.environmentId,
+      state.threadId,
+      state.phase,
+      freshWake ? state.snoozeWake!.eventId : state.updatedAt,
+    ]),
     alert_group: JSON.stringify([state.environmentId, state.threadId]),
     alert_title: notification.title,
     alert_body: notification.body,
@@ -81,18 +94,26 @@ export function androidAlertForAggregate(input: {
   readonly nowMs: number;
 }) {
   if (!input.preferences.notificationsEnabled) return null;
+  const wake = wakeTransitionRows(input);
   const attention = attentionTransitionRows(input);
   const activities =
-    attention.length > 0
-      ? attention
-      : terminalTransitionRows({ ...input, includeUnobserved: true });
+    wake.length > 0
+      ? wake
+      : attention.length > 0
+        ? attention
+        : terminalTransitionRows({ ...input, includeUnobserved: true });
   const first = activities[0];
   const alert = alertForActivityRows(activities);
   if (!first || !alert) return null;
   if (activities.length === 1) {
     const notification = notificationForActivity(first);
     return {
-      alert_id: JSON.stringify([first.environmentId, first.threadId, first.phase, first.updatedAt]),
+      alert_id: JSON.stringify([
+        first.environmentId,
+        first.threadId,
+        first.phase,
+        first.status === "Woke" ? first.snoozeWake?.eventId : first.updatedAt,
+      ]),
       alert_group: JSON.stringify([first.environmentId, first.threadId]),
       alert_title: notification.title,
       alert_body: notification.body,
@@ -103,7 +124,12 @@ export function androidAlertForAggregate(input: {
     // Stable group IDs let the native handler deduplicate across jobs, retries, and row orders.
     alert_id: JSON.stringify(
       activities
-        .map((row) => [row.environmentId, row.threadId, row.phase, row.updatedAt])
+        .map((row) => [
+          row.environmentId,
+          row.threadId,
+          row.phase,
+          row.status === "Woke" ? row.snoozeWake?.eventId : row.updatedAt,
+        ])
         .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     ),
     alert_title: alert.title,

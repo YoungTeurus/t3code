@@ -37,6 +37,15 @@ describe("createThreadNotificationGate", () => {
     vi.useRealTimers();
   });
 
+  it("notifies once for a new dependency wake but not for the first snapshot", () => {
+    const { notify, observe } = harness();
+    observe({ ...working, dependencyWakeId: "old" });
+    expect(notify).not.toHaveBeenCalled();
+    observe({ ...working, dependencyWakeId: "new" });
+    observe({ ...working, dependencyWakeId: "new" });
+    expect(notify.mock.calls).toEqual([["thread", "wake"]]);
+  });
+
   it("drops a completion when the thread resumes within the grace", () => {
     const { notify, observe } = harness();
     observe(working);
@@ -45,6 +54,17 @@ describe("createThreadNotificationGate", () => {
     observe(working);
     vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("replaces a pending completion notification with the dependency wake", () => {
+    const { notify, observe } = harness();
+    observe(working);
+    observe(completed(1));
+    observe({ ...completed(1), dependencyWakeId: "wake" });
+    vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
+    observe({ ...completed(1), dependencyWakeId: "wake" });
+    vi.advanceTimersByTime(WORKING_EXIT_GRACE_MS * 2);
+    expect(notify.mock.calls).toEqual([["thread", "wake"]]);
   });
 
   it("notifies a real completion once after the grace", () => {

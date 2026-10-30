@@ -13,7 +13,7 @@ export interface AgentActivityAlert {
 
 const TERMINAL_NOTIFICATION_FRESHNESS_MS = 2 * 60 * 1_000;
 
-function isFreshTerminalNotification(updatedAt: string, nowMs: number): boolean {
+export function isFreshTerminalNotification(updatedAt: string, nowMs: number): boolean {
   const timestamp = Option.getOrNull(DateTime.make(updatedAt));
   return (
     timestamp !== null && nowMs - timestamp.epochMilliseconds <= TERMINAL_NOTIFICATION_FRESHNESS_MS
@@ -36,9 +36,14 @@ export function rowPhasesChanged(
 ): boolean {
   if (previousAggregate.activities.length !== nextAggregate.activities.length) return true;
   const previousPhases = new Map(
-    previousAggregate.activities.map((row) => [rowKey(row), row.phase]),
+    previousAggregate.activities.map((row) => [
+      rowKey(row),
+      `${row.phase}:${row.snoozeWake?.eventId ?? ""}`,
+    ]),
   );
-  return nextAggregate.activities.some((row) => previousPhases.get(rowKey(row)) !== row.phase);
+  return nextAggregate.activities.some(
+    (row) => previousPhases.get(rowKey(row)) !== `${row.phase}:${row.snoozeWake?.eventId ?? ""}`,
+  );
 }
 
 function isAttentionPhase(phase: string): boolean {
@@ -56,12 +61,35 @@ function alertAllowedForPhase(
     case "waiting_for_input":
       return preferences.notifyOnInput;
     case "completed":
+    case "woke":
       return preferences.notifyOnCompletion;
     case "failed":
       return preferences.notifyOnFailure;
     default:
       return false;
   }
+}
+
+export function wakeTransitionRows(input: TransitionInput & { readonly nowMs: number }) {
+  if (input.preferences?.notificationsEnabled === false) return [];
+  const previous = new Map(
+    input.previousAggregate?.activities.map((row) => [rowKey(row), row.snoozeWake?.eventId]) ?? [],
+  );
+  return input.nextAggregate.activities
+    .filter(
+      (row) =>
+        row.snoozeWake !== undefined &&
+        previous.get(rowKey(row)) !== row.snoozeWake.eventId &&
+        alertAllowedForPhase(input.preferences, "woke") &&
+        isFreshTerminalNotification(row.snoozeWake.occurredAt, input.nowMs),
+    )
+    .map((row) => ({ ...row, status: "Woke" }));
+}
+
+export function alertForWakeTransition(
+  input: TransitionInput & { readonly nowMs: number },
+): AgentActivityAlert | null {
+  return alertForActivityRows(wakeTransitionRows(input));
 }
 
 // A missing baseline is a replay, not a transition that should buzz the phone.
@@ -122,7 +150,10 @@ export function alertForActivityRows(
     return { title: first.threadTitle, body: `${first.status}: ${first.projectTitle}` };
   }
   return {
-    title: `${rows.length} agents ${isAttentionPhase(first.phase) ? "need attention" : "finished"}`,
+    title:
+      first.status === "Woke"
+        ? `${rows.length} threads woke`
+        : `${rows.length} agents ${isAttentionPhase(first.phase) ? "need attention" : "finished"}`,
     body: rows.map((row) => row.threadTitle).join(", "),
   };
 }
@@ -151,11 +182,15 @@ export function shouldAlertForActivity(input: {
   readonly updatedAt: string;
   readonly preferences: RelayAgentAwarenessPreferences | null;
   readonly nowMs: number;
+  readonly snoozeWake?: { readonly eventId: string; readonly occurredAt: string } | undefined;
 }): boolean {
-  return (
-    input.preferences?.notificationsEnabled === true &&
+  const wake =
+    input.snoozeWake !== undefined &&
+    alertAllowedForPhase(input.preferences, "woke") &&
+    isFreshTerminalNotification(input.snoozeWake.occurredAt, input.nowMs);
+  const ordinary =
     alertAllowedForPhase(input.preferences, input.phase) &&
     ((input.phase !== "completed" && input.phase !== "failed") ||
-      isFreshTerminalNotification(input.updatedAt, input.nowMs))
-  );
+      isFreshTerminalNotification(input.updatedAt, input.nowMs));
+  return input.preferences?.notificationsEnabled === true && (wake || ordinary);
 }

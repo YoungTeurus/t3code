@@ -10,6 +10,12 @@ import {
 } from "./thread-list-v2-row-appearance";
 import { RowPressable } from "../../components/ui/RowPressable";
 import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
+import { SnoozeUntilThreadSheet } from "./SnoozeUntilThreadSheet";
+import { useServerConfigs, useThreadShell } from "../../state/entities";
+import * as Cause from "effect/Cause";
+import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
+import { showThreadUndoNotice } from "../home/thread-undo-notice";
+import { scopedThreadKey } from "../../lib/scopedEntities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
 import { threadEnvironment } from "../../state/threads";
@@ -25,7 +31,11 @@ import {
   formatWorkingDurationLabel,
   resolveThreadWorkingStartedAt,
 } from "@t3tools/client-runtime/state/models";
-import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  CommandId,
+  type EnvironmentMachineKind,
+} from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -43,6 +53,7 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { ProviderIcon, ProviderInstanceIcon } from "../../components/ProviderIcon";
 import { useNowAfter } from "../../lib/clock";
 import { cn } from "../../lib/cn";
+import { uuidv4 } from "../../lib/uuid";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
@@ -658,6 +669,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onMoveThread,
   } = props;
   const snoozedRow = props.snoozed === true;
+  const dependencyTarget = useThreadShell(
+    thread.snoozeDependency == null
+      ? null
+      : { environmentId: thread.environmentId, threadId: thread.snoozeDependency.targetThreadId },
+  );
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
 
@@ -698,6 +714,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const snoozeUntilThread = useAtomCommand(threadEnvironment.snoozeUntilThread, {
+    reportFailure: false,
+  });
+  const undoSnoozeDependency = useAtomCommand(threadEnvironment.undoSnoozeDependency, {
+    reportFailure: false,
+  });
+  const undoSnooze = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
+  const supportsSnoozeDependency =
+    useServerConfigs().get(thread.environmentId)?.environment.capabilities
+      .threadSnoozeDependency === true;
   const handleAcknowledgeWoke = useCallback(() => {
     if (props.wokeAt === null) return;
     void visitThread({
@@ -723,12 +749,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleSettle = useCallback(() => onSettleThread(thread), [onSettleThread, thread]);
   const [customSnoozeOpen, setCustomSnoozeOpen] = useState(false);
+  const [threadSnoozeOpen, setThreadSnoozeOpen] = useState(false);
   // Recycling changes identity without remounting; clear local UI directly because equality may skip the render closure.
   const rowIdentity = `${thread.environmentId}:${thread.id}`;
   const [boundIdentity, setBoundIdentity] = useState(rowIdentity);
   if (boundIdentity !== rowIdentity) {
     setBoundIdentity(rowIdentity);
     setCustomSnoozeOpen(false);
+    setThreadSnoozeOpen(false);
   }
   const handleSnooze = useCallback(
     (snoozedUntil: string) => onSnoozeThread(thread, snoozedUntil),
@@ -775,9 +803,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         title: preset.label,
         subtitle: preset.whenLabel,
       })),
+      ...(supportsSnoozeDependency
+        ? [{ id: "snooze:thread", title: "Until another thread…" }]
+        : []),
       { id: "snooze:custom", title: "Custom…" },
     ],
-    [snoozePresets],
+    [snoozePresets, supportsSnoozeDependency],
   );
   const arrangementMenuItems = useMemo<MenuAction[]>(
     () => [
@@ -959,6 +990,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         setCustomSnoozeOpen(true);
         return;
       }
+      if (nativeEvent.event === "snooze:thread") {
+        setThreadSnoozeOpen(true);
+        return;
+      }
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({
         event: nativeEvent.event,
         displayedPresets: snoozePresets,
@@ -991,6 +1026,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleUnsettle,
       handleUnsnooze,
       setCustomSnoozeOpen,
+      setThreadSnoozeOpen,
       snoozePresets,
       props.snoozePresets,
     ],
@@ -1174,6 +1210,22 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             selected={selected}
           />
         </View>
+      ) : null}
+      {snoozedRow && thread.snoozeDependency != null && dependencyTarget != null ? (
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel={`Open ${dependencyTarget.title}`}
+          onPress={(event) => {
+            event.stopPropagation();
+            onSelectThread(dependencyTarget);
+          }}
+          style={{ paddingLeft: titleTextInset }}
+        >
+          <Text className="text-xs" numberOfLines={1}>
+            {thread.snoozeDependency.until === "settled" ? "Settle" : "Successful run"}:{" "}
+            {dependencyTarget.title}
+          </Text>
+        </Pressable>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2" style={{ paddingLeft: titleTextInset }}>
         {(status === "failed" || status === "limited") && thread.runtime?.lastError ? (
@@ -1385,21 +1437,37 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             ) : null}
           </View>
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
-          <Text
-            className={cn(
-              "text-sm tabular-nums",
-              selected
-                ? selectedThreadRowColors.mutedForegroundClassName
-                : snoozedRow
-                  ? rowAppearance.mutedForegroundClassName
-                  : rowAppearance.tertiaryForegroundClassName,
-            )}
-            style={{ fontFamily: MONO_FONT }}
-          >
-            {snoozedRow && props.snoozeWakeLabelText !== undefined
-              ? props.snoozeWakeLabelText
-              : timeLabel}
-          </Text>
+          {snoozedRow && thread.snoozeDependency != null && dependencyTarget != null ? (
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel={`Open ${dependencyTarget.title}`}
+              onPress={(event) => {
+                event.stopPropagation();
+                onSelectThread(dependencyTarget);
+              }}
+            >
+              <Text className="text-sm" numberOfLines={1}>
+                {thread.snoozeDependency.until === "settled" ? "Settle" : "Successful run"}:{" "}
+                {dependencyTarget.title}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text
+              className={cn(
+                "text-sm tabular-nums",
+                selected
+                  ? selectedThreadRowColors.mutedForegroundClassName
+                  : snoozedRow
+                    ? rowAppearance.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
+              )}
+              style={{ fontFamily: MONO_FONT }}
+            >
+              {snoozedRow && props.snoozeWakeLabelText !== undefined
+                ? props.snoozeWakeLabelText
+                : timeLabel}
+            </Text>
+          )}
         </View>
       </RowPressable>
     );
@@ -1411,6 +1479,73 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     <View collapsable={false}>
       {customSnoozeOpen && (
         <CustomSnoozeSheet onClose={() => setCustomSnoozeOpen(false)} onSnooze={handleSnooze} />
+      )}
+      {threadSnoozeOpen && (
+        <SnoozeUntilThreadSheet
+          thread={thread}
+          onClose={() => setThreadSnoozeOpen(false)}
+          onSnooze={(targetThreadId, until, expectedDependencyId) => {
+            setThreadSnoozeOpen(false);
+            const claim = ThreadUndo.begin(
+              "snooze",
+              scopedThreadKey(thread.environmentId, thread.id),
+            );
+            const plan = ThreadUndo.planThreadUndo("snooze", thread);
+            const commandId = CommandId.make(uuidv4());
+            void snoozeUntilThread({
+              environmentId: thread.environmentId,
+              input: {
+                threadId: thread.id,
+                targetThreadId,
+                until,
+                commandId,
+                ...(expectedDependencyId === undefined ? {} : { expectedDependencyId }),
+              },
+            }).then((result) => {
+              if (result._tag === "Failure") {
+                claim.finish();
+                const error = Cause.squash(result.cause);
+                Dialog.alert(
+                  "Could not snooze thread",
+                  error instanceof Error ? error.message : "Try again.",
+                );
+                return;
+              }
+              showThreadUndoNotice({
+                action: "Snoozed",
+                claim,
+                undo: async () => {
+                  const step = plan[0];
+                  const outcome =
+                    step.action === "restore-dependency"
+                      ? await undoSnoozeDependency({
+                          environmentId: thread.environmentId,
+                          input: {
+                            threadId: thread.id,
+                            dependency: step.dependency,
+                            expectedCommandId: commandId,
+                          },
+                        })
+                      : await undoSnooze({
+                          environmentId: thread.environmentId,
+                          input: {
+                            threadId: thread.id,
+                            reason: "user",
+                            expectedDependencyId: commandId,
+                          },
+                        });
+                  if (outcome._tag === "Failure") {
+                    const error = Cause.squash(outcome.cause);
+                    Dialog.alert(
+                      "Could not undo snooze",
+                      error instanceof Error ? error.message : "Try again.",
+                    );
+                  }
+                },
+              });
+            });
+          }}
+        />
       )}
       <ThreadSwipeable
         dormant={dormant}

@@ -206,6 +206,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "autoSettleDisabledAt"
   | "snoozedUntil"
   | "snoozedAt"
+  | "snoozeDependency"
   | "latestRunId"
   | "latestRunRequestedAt"
   | "latestRunStartedAt"
@@ -400,6 +401,7 @@ export interface ActiveShellIndexEntry extends Pick<
 > {
   /** False only when no run, request, work item, or watch can make the shell live. */
   readonly mayBeLive: boolean;
+  readonly hasSnoozeDependency: boolean;
 }
 
 export interface OlderSettledThreadsQuery {
@@ -1543,6 +1545,8 @@ export function threadShellFromProjection(
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
+    snoozeDependency: projection.thread.snoozeDependency ?? null,
+    snoozeDependencyWake: projection.thread.snoozeDependencyWake ?? null,
     pinnedAt: projection.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
@@ -1809,6 +1813,8 @@ function shellFromState(input: {
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
+    snoozeDependency: input.state.thread.snoozeDependency ?? null,
+    snoozeDependencyWake: input.state.thread.snoozeDependencyWake ?? null,
     pinnedAt: input.state.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,
@@ -6192,6 +6198,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   autoSettleDisabledAt: thread.autoSettleDisabledAt ?? null,
                   snoozedUntil: thread.snoozedUntil ?? null,
                   snoozedAt: thread.snoozedAt ?? null,
+                  snoozeDependency: thread.snoozeDependency ?? null,
                   status,
                   latestRunId,
                   latestRunRequestedAt:
@@ -6648,6 +6655,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         readonly settled_at: string | null;
         readonly pinned_at: string | null;
         readonly snoozed_until: string | null;
+        readonly has_snooze_dependency: number;
         readonly may_be_live: number;
       }>`
         SELECT
@@ -6660,6 +6668,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           json_extract(t.payload_json, '$.settledAt') AS settled_at,
           json_extract(t.payload_json, '$.pinnedAt') AS pinned_at,
           json_extract(t.payload_json, '$.snoozedUntil') AS snoozed_until,
+          json_type(t.payload_json, '$.snoozeDependency') = 'object' AS has_snooze_dependency,
           -- A superset of isLiveSubagentShell: the sources of its run status, pending request,
           -- and pending background work.
           (
@@ -6719,6 +6728,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         pinnedAt: row.pinned_at === null ? null : DateTime.makeUnsafe(row.pinned_at),
         snoozedUntil: row.snoozed_until === null ? null : DateTime.makeUnsafe(row.snoozed_until),
         mayBeLive: row.may_be_live === 1,
+        hasSnoozeDependency: row.has_snooze_dependency === 1,
       }));
     }, Effect.mapError(shellSnapshotReadError));
 

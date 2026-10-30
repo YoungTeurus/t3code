@@ -87,6 +87,7 @@ export interface ThreadActionMenuState {
     readonly settlement: boolean;
     readonly autoSettleOptOut: boolean;
     readonly snooze: boolean;
+    readonly snoozeDependency?: boolean;
     readonly pinning: boolean;
     readonly titleRegeneration: boolean;
   };
@@ -153,6 +154,9 @@ export function buildThreadActionMenuItems(
                 icon: "clock",
                 disabled: !state.canSnoozeNow,
                 children: [
+                  ...(state.supports.snoozeDependency
+                    ? [{ id: "snooze:thread" as const, label: "Until another thread…" }]
+                    : []),
                   ...state.snoozePresets.map((preset) => ({
                     id: `snooze:${preset.id}` as const,
                     label: `${preset.label} (${preset.whenLabel})`,

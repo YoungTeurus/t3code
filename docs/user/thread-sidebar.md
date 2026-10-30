@@ -297,3 +297,14 @@ several selected threads together. Choose **Wake thread** to bring a thread back
 A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early only when it needs
 an approval or answer from you, when a run fails, or when you send it a message.
+
+Choose **Snooze → Until another thread…** to wait for one thread in the same
+environment, including a thread in another project. Choose either its next
+successful run or when it is settled. Failed or stopped runs keep the wait in
+place. If the other thread is archived or deleted, the waiting thread wakes and
+shows the reason. Waking a thread this way does not start its agent.
+
+When the waiting thread needs your attention, it becomes visible while keeping
+the wait. After responding, you can snooze it again with the same condition.
+**Wake thread** cancels the wait. Settled threads are excluded from the picker
+by default; include them to wait for a future successful run.

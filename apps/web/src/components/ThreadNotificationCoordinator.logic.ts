@@ -1,6 +1,6 @@
 import { WORKING_EXIT_GRACE_MS } from "@t3tools/client-runtime/state/thread-inbox";
 
-export type ThreadNotificationKind = "input" | "completion";
+export type ThreadNotificationKind = "input" | "completion" | "wake";
 
 export interface ThreadNotificationObservation {
   /** Run and status key while the thread needs attention, otherwise null. */
@@ -9,6 +9,7 @@ export interface ThreadNotificationObservation {
   readonly settled: boolean;
   /** When the latest run completed, if it did. */
   readonly completedAt: number | null;
+  readonly dependencyWakeId?: string | null;
 }
 
 /**
@@ -43,6 +44,12 @@ export function createThreadNotificationGate<Key>(
       // The first sighting, archived threads, and stopped or silent runs never notify completion.
       if (!prior || options.archived || options.quiet) skip(key, next.completedAt);
       if (!prior || options.archived) return;
+      if (next.dependencyWakeId && next.dependencyWakeId !== prior.dependencyWakeId) {
+        skip(key, lastSettled.get(key) ?? null);
+        cancel(key);
+        notify(key, "wake");
+        return;
+      }
       if (next.attention && next.attention !== prior.attention) {
         // Attention replaces the completion before it, so that run must not notify later.
         skip(key, lastSettled.get(key) ?? null);

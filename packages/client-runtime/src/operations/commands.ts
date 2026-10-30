@@ -24,6 +24,7 @@ import {
   type RuntimeMode,
   type RuntimeRequestId,
   type ThreadId,
+  type ThreadSnoozeDependency,
   type ThreadEnvMode,
   type UploadChatAttachment,
   type GuestMessageId,
@@ -107,9 +108,19 @@ export interface ReorderActiveThreadInput extends ThreadCommandInput {
 export interface SnoozeThreadInput extends ThreadCommandInput {
   readonly snoozedUntil: string;
 }
+export interface SnoozeThreadUntilThreadInput extends ThreadCommandInput {
+  readonly targetThreadId: ThreadId;
+  readonly until: "settled" | "completed";
+  readonly expectedDependencyId?: string;
+}
+export interface UndoSnoozeDependencyInput extends ThreadCommandInput {
+  readonly dependency: ThreadSnoozeDependency;
+  readonly expectedCommandId: CommandId;
+}
 
 export interface UnsnoozeThreadInput extends ThreadCommandInput {
   readonly reason: "user";
+  readonly expectedDependencyId?: string;
 }
 
 export interface VisitThreadInput extends ThreadCommandInput {
@@ -555,6 +566,33 @@ export const snoozeThread = Effect.fn("EnvironmentCommands.snoozeThread")(functi
   });
 });
 
+export const snoozeThreadUntilThread = Effect.fn("EnvironmentCommands.snoozeThreadUntilThread")(
+  function* (input: SnoozeThreadUntilThreadInput) {
+    return yield* dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+      targetThreadId: input.targetThreadId,
+      until: input.until,
+      ...(input.expectedDependencyId === undefined
+        ? {}
+        : { expectedDependencyId: input.expectedDependencyId }),
+    });
+  },
+);
+
+export const undoSnoozeDependency = Effect.fn("EnvironmentCommands.undoSnoozeDependency")(
+  function* (input: UndoSnoozeDependencyInput) {
+    return yield* dispatch({
+      type: "thread.snooze-dependency.undo",
+      commandId: yield* allocateCommandId(input),
+      threadId: input.threadId,
+      dependency: input.dependency,
+      expectedCommandId: input.expectedCommandId,
+    });
+  },
+);
+
 export const unsnoozeThread = Effect.fn("EnvironmentCommands.unsnoozeThread")(function* (
   input: UnsnoozeThreadInput,
 ) {
@@ -563,6 +601,9 @@ export const unsnoozeThread = Effect.fn("EnvironmentCommands.unsnoozeThread")(fu
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     reason: input.reason,
+    ...(input.expectedDependencyId === undefined
+      ? {}
+      : { expectedDependencyId: input.expectedDependencyId }),
   });
 });
 

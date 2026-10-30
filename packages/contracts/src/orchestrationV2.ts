@@ -433,6 +433,21 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+export const ThreadSnoozeDependency = Schema.Struct({
+  targetThreadId: ThreadId,
+  until: Schema.Literals(["settled", "completed"]),
+  visibility: Schema.Literals(["hidden", "visible"]),
+  dependencyId: TrimmedNonEmptyString,
+});
+
+export type ThreadSnoozeDependency = typeof ThreadSnoozeDependency.Type;
+export const ThreadSnoozeDependencyWake = Schema.Struct({
+  targetThreadId: ThreadId,
+  reason: Schema.Literals(["settled", "completed", "archived", "deleted"]),
+  eventId: TrimmedNonEmptyString,
+  occurredAt: IsoDateTime,
+});
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -475,6 +490,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  snoozeDependency: Schema.optional(Schema.NullOr(ThreadSnoozeDependency)),
+  snoozeDependencyWake: Schema.optional(Schema.NullOr(ThreadSnoozeDependencyWake)),
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   guestShare: Schema.optional(Schema.NullOr(ThreadGuestShare)),
@@ -2091,6 +2108,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  snoozeDependency: Schema.optional(Schema.NullOr(ThreadSnoozeDependency)),
+  snoozeDependencyWake: Schema.optional(Schema.NullOr(ThreadSnoozeDependencyWake)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2940,10 +2959,26 @@ export const OrchestrationV2Command = Schema.Union([
     snoozedUntil: IsoDateTime,
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.snooze-until-thread"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    targetThreadId: ThreadId,
+    until: Schema.Literals(["settled", "completed"]),
+    expectedDependencyId: Schema.optional(TrimmedNonEmptyString),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.snooze-dependency.undo"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    dependency: ThreadSnoozeDependency,
+    expectedCommandId: CommandId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.unsnooze"),
     commandId: CommandId,
     threadId: ThreadId,
     reason: Schema.Literal("user"),
+    expectedDependencyId: Schema.optional(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.auto-settle.set"),
@@ -3320,6 +3355,33 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread.remote-approval.observe"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    taskId: NodeId,
+    remoteEnvironmentId: EnvironmentId,
+    remoteThreadId: ThreadId,
+    snapshotSequence: NonNegativeInt,
+    lastAttentionSequence: NonNegativeInt,
+    pendingApprovalCount: NonNegativeInt,
+    unavailable: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.snooze-dependency.show"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    dependencyId: TrimmedNonEmptyString,
+    attentionSequence: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.snooze-dependency.resolve"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    dependencyId: TrimmedNonEmptyString,
+    targetThreadId: ThreadId,
+    reason: Schema.Literals(["settled", "completed", "archived", "deleted"]),
+  }),
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),

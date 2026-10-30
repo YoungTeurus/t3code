@@ -8,11 +8,12 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
+  type OrchestratorMcpApprovalAttention,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
   type RunId,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -505,6 +506,115 @@ const make = Effect.gen(function* () {
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
+  const observeApproval = Effect.fn("RemoteDelegation.observeApproval")(function* (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    remote: OrchestrationV2RemoteTaskChild,
+    attention: OrchestratorMcpApprovalAttention | undefined,
+  ) {
+    const previous = yield* threads.remoteApprovalObservation(parentThreadId, taskId);
+    const unavailable =
+      attention === undefined ||
+      !attention.available ||
+      (previous !== null && attention.snapshotSequence < previous.snapshotSequence);
+    if (
+      unavailable &&
+      previous?.pendingApprovalCount === -1 &&
+      (attention === undefined ||
+        (attention.snapshotSequence <= previous.snapshotSequence &&
+          attention.lastAttentionSequence <= previous.lastAttentionSequence))
+    )
+      return;
+    if (
+      !unavailable &&
+      attention !== undefined &&
+      previous !== null &&
+      previous.snapshotSequence === attention.snapshotSequence &&
+      previous.lastAttentionSequence === attention.lastAttentionSequence &&
+      previous.pendingApprovalCount === attention.pendingApprovalCount
+    )
+      return;
+    const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    yield* threads.dispatch({
+      type: "thread.remote-approval.observe",
+      commandId: CommandId.make(`command:remote-approval:${taskId}:${id}`),
+      threadId: parentThreadId,
+      taskId,
+      remoteEnvironmentId: remote.environmentId,
+      remoteThreadId: remote.threadId,
+      snapshotSequence: attention?.snapshotSequence ?? 0,
+      lastAttentionSequence: attention?.lastAttentionSequence ?? 0,
+      pendingApprovalCount: attention?.pendingApprovalCount ?? 0,
+      ...(unavailable ? { unavailable: true } : {}),
+    });
+  });
+
+  // Read the peers before taking the parent lock. The dispatch transaction rechecks
+  // the exact task set and observations, so a concurrent local change rejects Snooze.
+  yield* threads.registerRemoteApprovalPreflight((threadId) =>
+    Effect.gen(function* () {
+      const tasks = yield* threads.remoteApprovalTasks(threadId);
+      const checked = new Map<string, OrchestratorMcpApprovalAttention>();
+      for (const item of tasks) {
+        const parentThreadId = ThreadId.make(item.parentThreadId);
+        const taskId = NodeId.make(item.taskId);
+        const { thread, task } = yield* readTask(parentThreadId, taskId);
+        const remote = task?.remoteChild;
+        if (
+          task === undefined ||
+          remote === undefined ||
+          task.result !== null ||
+          remote.threadId !== item.remoteThreadId ||
+          remote.environmentId !== item.remoteEnvironmentId
+        ) {
+          return yield* Effect.fail("The remote task changed while checking approvals.");
+        }
+        const scope = followScope(
+          { threadId: parentThreadId, providerInstanceId: thread.providerInstanceId },
+          remote,
+        );
+        const read = yield* forwarding.readThread(scope, remote.environmentId, {
+          threadId: remote.threadId,
+          limit: 1,
+          includeApprovalAttention: true,
+        });
+        yield* observeApproval(parentThreadId, taskId, remote, read.approvalAttention);
+        if (
+          read.approvalAttention === undefined ||
+          !read.approvalAttention.available ||
+          read.approvalAttention.pendingApprovalCount !== 0
+        ) {
+          return yield* Effect.fail(
+            "A remote task needs approval or its approval status is unavailable.",
+          );
+        }
+        checked.set(`${item.parentThreadId}\u0000${item.taskId}`, read.approvalAttention);
+      }
+      const actual = yield* threads.remoteApprovalTasks(threadId);
+      if (
+        actual.length !== tasks.length ||
+        actual.some((item, index) => {
+          const before = tasks[index];
+          const attention = checked.get(`${item.parentThreadId}\u0000${item.taskId}`);
+          return (
+            before === undefined ||
+            attention === undefined ||
+            before.parentThreadId !== item.parentThreadId ||
+            before.taskId !== item.taskId ||
+            before.remoteEnvironmentId !== item.remoteEnvironmentId ||
+            before.remoteThreadId !== item.remoteThreadId ||
+            item.pendingApprovalCount !== 0 ||
+            item.lastAttentionSequence !== attention.lastAttentionSequence ||
+            item.snapshotSequence === null ||
+            item.snapshotSequence < attention.snapshotSequence
+          );
+        })
+      )
+        return yield* Effect.fail("The remote task approval status changed while checking.");
+      return actual;
+    }).pipe(Effect.mapError(String)),
+  );
+
   /**
    * Waits for the task's run there to end, completes the task here, and stops it there if it
    * ended here first. A revoked, expired or forgotten link, or a thread or run gone there,
@@ -515,6 +625,18 @@ const make = Effect.gen(function* () {
     followOnce(parentThreadId, taskId).pipe(
       // `false` means it is still running there: follow again straight away.
       Effect.repeat({ while: (done) => !done }),
+      Effect.tapError((error) =>
+        error._tag !== "OrchestratorMcpFailure"
+          ? Effect.void
+          : readTask(parentThreadId, taskId).pipe(
+              Effect.flatMap(({ task }) =>
+                task?.remoteChild === undefined
+                  ? Effect.void
+                  : observeApproval(parentThreadId, taskId, task.remoteChild, undefined),
+              ),
+              Effect.ignoreCause({ log: true }),
+            ),
+      ),
       Effect.catchTags({
         OrchestratorMcpFailure: Effect.fn("RemoteDelegation.followFailed")(function* (error) {
           const reason = yield* finalReason(parentThreadId, taskId, error);
@@ -542,6 +664,16 @@ const make = Effect.gen(function* () {
     const { thread, task } = yield* readTask(parentThreadId, taskId);
     if (task?.remoteChild === undefined) return true;
     const remote = task.remoteChild;
+    const observeWhileOpen = (attention: OrchestratorMcpApprovalAttention | undefined) =>
+      observeApproval(parentThreadId, taskId, remote, attention).pipe(
+        Effect.catch((error) =>
+          readTask(parentThreadId, taskId).pipe(
+            Effect.flatMap(({ task: current }) =>
+              current === undefined || current.result !== null ? Effect.void : Effect.fail(error),
+            ),
+          ),
+        ),
+      );
     const scope = followScope(
       { threadId: parentThreadId, providerInstanceId: thread.providerInstanceId },
       remote,
@@ -596,6 +728,19 @@ const make = Effect.gen(function* () {
           Option.isSome(ended) ? Effect.succeed({ endedHere: true } as const) : Effect.never,
         ),
       );
+    let observed = yield* threads.remoteApprovalObservation(parentThreadId, taskId);
+    if (observed === null || observed.pendingApprovalCount < 0) {
+      const read = yield* forwarding
+        .readThread(scope, remote.environmentId, {
+          threadId: remote.threadId,
+          limit: 1,
+          includeApprovalAttention: true,
+        })
+        .pipe(Effect.raceFirst(endedHere));
+      if ("endedHere" in read) return false;
+      yield* observeWhileOpen(read.approvalAttention);
+      observed = yield* threads.remoteApprovalObservation(parentThreadId, taskId);
+    }
     const waited = yield* forwarding
       .waitForThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -605,10 +750,22 @@ const make = Effect.gen(function* () {
         // tasks to wake it for the answer, which a task here waits for too.
         // An older peer ignores this and reports the run alone.
         untilDelegatedWorkSettled: true,
+        ...(observed !== null
+          ? {
+              afterApprovalAttentionSequence: observed.lastAttentionSequence,
+              afterApprovalAvailable: observed.pendingApprovalCount >= 0,
+              ...(observed.pendingApprovalCount < 0
+                ? {}
+                : { afterApprovalPendingCount: observed.pendingApprovalCount }),
+            }
+          : {}),
       })
       .pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
+    if (observed !== null) {
+      yield* observeWhileOpen(waited.approvalAttention);
+    }
     if (waited.timedOut) return false;
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.

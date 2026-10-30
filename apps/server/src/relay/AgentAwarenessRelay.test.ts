@@ -144,6 +144,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     readonly linked?: boolean;
     readonly readShell?: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadShell | null>;
     readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
+    readonly supportsWake?: boolean;
   } = {},
 ) {
   const values = new Map<string, Uint8Array>(
@@ -222,6 +223,10 @@ const makeTestRelay = Effect.fnUntraced(function* (
     awaitBackgroundTasks: unused,
     stopDelegatedTasks: unused,
     getThreadEventSequence: unused,
+    approvalAttention: unused,
+    remoteApprovalObservation: unused,
+    remoteApprovalTasks: unused,
+    registerRemoteApprovalPreflight: unused,
     recoverDelegatedTask: unused,
     delegatedTaskResultPending: unused,
     streamStoredEvents: Stream.empty,
@@ -238,6 +243,16 @@ const makeTestRelay = Effect.fnUntraced(function* (
       input: Parameters<typeof globalThis.fetch>[0],
       init?: Parameters<typeof globalThis.fetch>[1],
     ) => {
+      if (String(input).endsWith("/health"))
+        return Promise.resolve(
+          Response.json({
+            ok: true,
+            service: "relay",
+            ...(options.supportsWake === false
+              ? {}
+              : { capabilities: { snoozeWakeNotifications: true } }),
+          }),
+        );
       const body = init?.body;
       if (typeof body !== "string" && !(body instanceof Uint8Array)) {
         return Promise.reject(new Error("Expected a serialized activity publish payload"));
@@ -292,6 +307,53 @@ const makeTestRelay = Effect.fnUntraced(function* (
 });
 
 describe("AgentAwarenessRelay", () => {
+  it.effect("does not report a fictitious agent completion to an older relay", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay({ supportsWake: false });
+      yield* TestClock.adjust("1 second");
+      const occurredAt = DateTime.formatIso(yield* DateTime.now);
+      yield* Ref.set(
+        currentShell,
+        shell({
+          status: "idle",
+          snoozeDependencyWake: {
+            targetThreadId: SECOND_THREAD_ID,
+            reason: "settled",
+            eventId: "old-relay-wake",
+            occurredAt,
+          },
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("6 seconds");
+      yield* relay.drain;
+      assert.isFalse(publications.some((publication) => publication.state?.phase === "completed"));
+    }),
+  );
+  it.effect("publishes a fresh dependency wake for an idle thread without starting a run", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* TestClock.adjust("1 second");
+      const occurredAt = DateTime.formatIso(yield* DateTime.now);
+      yield* Ref.set(
+        currentShell,
+        shell({
+          status: "idle",
+          snoozeDependencyWake: {
+            targetThreadId: SECOND_THREAD_ID,
+            reason: "settled",
+            eventId: "wake-1",
+            occurredAt,
+          },
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications[0]?.state?.headline, "Thread woke");
+      assert.equal(publications[0]?.state?.snoozeWake?.eventId, "wake-1");
+      yield* relay.publishThread(THREAD_ID);
+      assert.lengthOf(publications, 1);
+    }),
+  );
   it.effect("coalesces queued updates and reruns a thread dirtied during publishing", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

@@ -101,6 +101,10 @@ function existingThreadIdsForCommand(
       return [];
     case "thread.fork":
       return [command.sourceThreadId];
+    case "thread.snooze-until-thread":
+      return command.threadId === command.targetThreadId
+        ? [command.threadId]
+        : [command.threadId, command.targetThreadId];
     case "thread.merge_back":
       return command.sourceThreadId === command.targetThreadId
         ? [command.sourceThreadId]
@@ -471,6 +475,10 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
+  readonly approvalAttention: Orchestrator.OrchestratorV2["Service"]["approvalAttention"];
+  readonly remoteApprovalObservation: Orchestrator.OrchestratorV2["Service"]["remoteApprovalObservation"];
+  readonly remoteApprovalTasks: Orchestrator.OrchestratorV2["Service"]["remoteApprovalTasks"];
+  readonly registerRemoteApprovalPreflight: Orchestrator.OrchestratorV2["Service"]["registerRemoteApprovalPreflight"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEvents: Orchestrator.OrchestratorV2["Service"]["streamStoredEvents"];
@@ -1356,6 +1364,10 @@ const make = Effect.gen(function* () {
     stopWorkflow,
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    approvalAttention: orchestrator.approvalAttention,
+    remoteApprovalObservation: orchestrator.remoteApprovalObservation,
+    remoteApprovalTasks: orchestrator.remoteApprovalTasks,
+    registerRemoteApprovalPreflight: orchestrator.registerRemoteApprovalPreflight,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEvents: orchestrator.streamStoredEvents,

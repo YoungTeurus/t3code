@@ -475,7 +475,11 @@ export const layerHealthApi = HttpApiBuilder.group(
       Effect.fn("relay.api.health")(
         function* () {
           yield* db.execute(drizzleSql`SELECT 1`);
-          return { ok: true, service: "relay" as const };
+          return {
+            ok: true,
+            service: "relay" as const,
+            capabilities: { snoozeWakeNotifications: true },
+          };
         },
         Effect.catch(() => relayInternalErrorResponse("database_unavailable")),
       ),

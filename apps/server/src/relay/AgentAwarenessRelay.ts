@@ -102,17 +102,23 @@ function shouldPublishAgentAwarenessEvent(
     case "subagent.updated":
     case "provider-thread.updated":
       return true;
+    case "thread.unsnoozed":
+    case "thread.visited":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "snoozeDependencyWake" in event.payload &&
+        event.payload.snoozeDependencyWake != null
+      );
     // Unsettling must not re-alert a dismissed result.
     case "thread.unsettled":
     case "thread.guest-share-updated":
     case "thread.snoozed":
-    case "thread.unsnoozed":
     case "thread.auto-settle-set":
     case "thread.pinned":
     case "thread.unpinned":
     case "thread.pin-reordered":
     case "thread.active-reordered":
-    case "thread.visited":
     case "thread.marked-unread":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
@@ -289,6 +295,7 @@ function describeThreadShellForAwareness(
 
 function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly environmentId: EnvironmentId;
+  readonly startedAt: number;
   readonly thread: Option.Option<OrchestrationV2ThreadShell>;
   readonly project: Option.Option<Project>;
 }): {
@@ -310,14 +317,39 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
       reason: "project-not-found",
     };
   }
+  const wake = input.thread.value.snoozeDependencyWake;
+  const wakeAt = wake == null ? NaN : Date.parse(wake.occurredAt);
+  const visitedAt =
+    input.thread.value.lastVisitedAt == null
+      ? 0
+      : DateTime.toEpochMillis(input.thread.value.lastVisitedAt);
+  const recentWake =
+    wake != null && wakeAt > input.startedAt && wakeAt > visitedAt
+      ? { eventId: wake.eventId, occurredAt: wake.occurredAt }
+      : undefined;
+  const projected = projectThreadAwarenessV2({
+    environmentId: input.environmentId,
+    project: input.project.value,
+    thread: input.thread.value,
+  });
+  const state: RelayAgentActivityState | null =
+    projected === null && recentWake !== undefined
+      ? {
+          environmentId: input.environmentId,
+          threadId: input.thread.value.id,
+          projectTitle: input.project.value.title,
+          threadTitle: input.thread.value.title,
+          phase: "completed",
+          headline: "Thread woke",
+          modelTitle: input.thread.value.modelSelection.model,
+          updatedAt: recentWake.occurredAt,
+          deepLink: `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.thread.value.id)}`,
+        }
+      : projected;
   return {
     projectId: input.thread.value.projectId,
     state: sanitizeRelayAgentActivityState(
-      projectThreadAwarenessV2({
-        environmentId: input.environmentId,
-        project: input.project.value,
-        thread: input.thread.value,
-      }),
+      state == null || recentWake === undefined ? state : { ...state, snoozeWake: recentWake },
     ),
     reason: "snapshot",
   };
@@ -527,15 +559,37 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    let snapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
+      startedAt,
       thread,
       project,
     });
+    if (snapshot.state?.snoozeWake !== undefined) {
+      if (cachedRelayClient === undefined) cachedRelayClient = yield* makeRelayClient(relayConfig);
+      const supportsWake = yield* cachedRelayClient.health.health().pipe(
+        Effect.map((health) => health.capabilities?.snoozeWakeNotifications === true),
+        Effect.timeout("10 seconds"),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!supportsWake && Option.isSome(thread) && Option.isSome(project)) {
+        snapshot = {
+          ...snapshot,
+          state: sanitizeRelayAgentActivityState(
+            projectThreadAwarenessV2({
+              environmentId,
+              project: project.value,
+              thread: thread.value,
+            }),
+          ),
+        };
+      }
+    }
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
+      snapshot.state.snoozeWake === undefined &&
       !publishedStateByThread.has(threadId)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
@@ -558,7 +612,7 @@ export const make = Effect.gen(function* () {
     const requiresConfirmation =
       (snapshot.state === null &&
         publishedStateByThread.get(threadId) !== agentAwarenessPublishIdentity(null)) ||
-      snapshot.state?.phase === "completed";
+      (snapshot.state?.phase === "completed" && snapshot.state.snoozeWake === undefined);
     if (requiresConfirmation) {
       if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
       const nowMs = (yield* DateTime.now).epochMilliseconds;
@@ -594,6 +648,7 @@ export const make = Effect.gen(function* () {
         thread.value.settledOverride === "settled"
           ? resolveAgentAwarenessRelayPublishSnapshot({
               environmentId,
+              startedAt,
               thread: Option.some({ ...thread.value, settledOverride: null }),
               project,
             })

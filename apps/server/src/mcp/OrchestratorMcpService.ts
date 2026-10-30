@@ -2907,6 +2907,13 @@ const make = Effect.gen(function* () {
         ),
         nextPosition: page.at(-1)?.position ?? null,
         hasMore: timeline.hasMore,
+        ...(input.includeApprovalAttention === true
+          ? {
+              approvalAttention: yield* threadManagement
+                .approvalAttention(input.threadId)
+                .pipe(Effect.mapError(threadManagementFailure)),
+            }
+          : {}),
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
@@ -2961,7 +2968,7 @@ const make = Effect.gen(function* () {
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
       const { parent, target } = yield* loadScopedThread(scope, input.threadId);
-      const result = yield* threadManagement
+      const waiting = threadManagement
         .waitForThread({
           projectId: target.thread.projectId,
           threadId: input.threadId,
@@ -2973,6 +2980,66 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      const requestedAttention = input.afterApprovalAttentionSequence;
+      const initialAttention =
+        requestedAttention === undefined
+          ? undefined
+          : yield* threadManagement
+              .approvalAttention(input.threadId)
+              .pipe(Effect.mapError(threadManagementFailure));
+      const approvalWait =
+        requestedAttention === undefined || initialAttention === undefined
+          ? Effect.never
+          : initialAttention.lastAttentionSequence > requestedAttention ||
+              (input.afterApprovalPendingCount !== undefined &&
+                initialAttention.pendingApprovalCount !== input.afterApprovalPendingCount) ||
+              (input.afterApprovalAvailable !== undefined &&
+                initialAttention.available !== input.afterApprovalAvailable)
+            ? Effect.succeed(initialAttention)
+            : threadManagement
+                .streamStoredEventsFrom({ afterSequence: initialAttention.snapshotSequence })
+                .pipe(
+                  Stream.mapError(threadManagementFailure),
+                  Stream.filter(
+                    (stored) =>
+                      stored.event.type === "runtime-request.updated" ||
+                      stored.event.type === "thread.metadata-updated" ||
+                      stored.event.type === "subagent.updated" ||
+                      stored.event.type === "run.updated",
+                  ),
+                  Stream.mapEffect(() =>
+                    threadManagement
+                      .approvalAttention(input.threadId)
+                      .pipe(Effect.mapError(threadManagementFailure)),
+                  ),
+                  Stream.filter(
+                    (attention) =>
+                      attention.lastAttentionSequence > requestedAttention ||
+                      (input.afterApprovalPendingCount !== undefined &&
+                        attention.pendingApprovalCount !== input.afterApprovalPendingCount) ||
+                      (input.afterApprovalAvailable !== undefined &&
+                        attention.available !== input.afterApprovalAvailable),
+                  ),
+                  Stream.runHead,
+                  Effect.flatMap(
+                    Option.match({ onNone: () => Effect.never, onSome: Effect.succeed }),
+                  ),
+                );
+      const outcome = yield* Effect.raceFirst(
+        waiting.pipe(Effect.map((result) => ({ kind: "run" as const, result }))),
+        approvalWait.pipe(Effect.map((attention) => ({ kind: "attention" as const, attention }))),
+      );
+      const result =
+        outcome.kind === "run"
+          ? outcome.result
+          : {
+              run:
+                input.runId === undefined
+                  ? (target.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? null)
+                  : (target.runs.find((run) => run.id === input.runId) ?? null),
+              timedOut: true,
+              resultRun: undefined,
+            };
       const status = result.run === null ? "idle" : runOutcome(result.run);
       const taskId = result.run?.delegatedTaskId;
       const ownedTask =
@@ -2999,6 +3066,16 @@ const make = Effect.gen(function* () {
         runId: result.run?.id ?? null,
         status,
         timedOut: result.timedOut,
+        ...(requestedAttention === undefined
+          ? {}
+          : {
+              approvalAttention:
+                outcome.kind === "attention"
+                  ? outcome.attention
+                  : yield* threadManagement
+                      .approvalAttention(input.threadId)
+                      .pipe(Effect.mapError(threadManagementFailure)),
+            }),
         ...(wakesCaller ? { next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT } : {}),
         ...(result.resultRun === undefined
           ? {}

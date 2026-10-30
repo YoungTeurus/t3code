@@ -72,6 +72,16 @@ function makeQueuedTurnShell(overrides: Partial<QueuedTurnShell> = {}): QueuedTu
 }
 
 describe("effectiveSnoozed", () => {
+  it("uses the persisted visibility of an event dependency without a wake date", () => {
+    const shell = makeShell({});
+    expect(
+      effectiveSnoozed({ ...shell, snoozeDependency: { visibility: "hidden" } }, { now: NOW }),
+    ).toBe(true);
+    expect(
+      effectiveSnoozed({ ...shell, snoozeDependency: { visibility: "visible" } }, { now: NOW }),
+    ).toBe(false);
+  });
+
   it("never hides on malformed wake data", () => {
     expect(effectiveSnoozed(makeShell({ snoozedUntil: "not-a-date" }), { now: NOW })).toBe(false);
   });

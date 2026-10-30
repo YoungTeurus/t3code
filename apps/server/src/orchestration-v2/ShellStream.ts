@@ -161,6 +161,7 @@ function omitOlderSettledShellsWith(
     (thread) =>
       !isOlderSettledThreadShell(thread, beforeMs) ||
       thread.pinnedAt != null ||
+      thread.snoozeDependency != null ||
       (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
       isLiveSubagentShell(thread) ||
       ancestorIds.has(thread.id),
@@ -268,6 +269,7 @@ function shellSubscriberThreadIds(
           !isOlderSettledThreadShell(entry, beforeMs) ||
           entry.pinnedAt != null ||
           entry.snoozedUntil != null ||
+          entry.hasSnoozeDependency ||
           entry.mayBeLive ||
           ancestorIds.has(entry.id)
         ? [entry.id]

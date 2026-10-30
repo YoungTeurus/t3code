@@ -44,6 +44,8 @@ import { withSpanAttributes } from "../observability.ts";
 
 import {
   alertForAttentionTransition,
+  alertForWakeTransition,
+  wakeTransitionRows,
   alertForNewlyTerminal,
   alertForTerminalAggregate,
   rowPhasesChanged,
@@ -199,12 +201,34 @@ function notificationForAggregate(input: {
   if (!preferences?.notificationsEnabled) {
     return null;
   }
+  const previousAggregate = parseAggregate(input.target.last_aggregate_json);
+  const wake = wakeTransitionRows({
+    previousAggregate,
+    nextAggregate: input.aggregate,
+    preferences,
+    nowMs: input.nowMs,
+  })[0];
+  if (wake !== undefined) return notificationForActivity(wake);
   const activity = input.aggregate.activities[0];
   if (!activity) {
     return null;
   }
-  if (!shouldAlertForActivity({ ...activity, preferences, nowMs: input.nowMs })) return null;
-  return notificationForActivity(activity);
+  const previous = previousAggregate?.activities.find(
+    (row) => row.environmentId === activity.environmentId && row.threadId === activity.threadId,
+  );
+  const alreadyWoke =
+    activity.snoozeWake !== undefined &&
+    previous?.snoozeWake?.eventId === activity.snoozeWake.eventId;
+  if (
+    activity.snoozeWake !== undefined &&
+    (previous === undefined || previous.phase === activity.phase)
+  )
+    return null;
+  const { snoozeWake: _snoozeWake, ...ordinaryActivity } = activity;
+  const effectiveActivity = alreadyWoke ? ordinaryActivity : activity;
+  if (!shouldAlertForActivity({ ...effectiveActivity, preferences, nowMs: input.nowMs }))
+    return null;
+  return notificationForActivity(effectiveActivity);
 }
 
 // Suppressed Live Activity updates must not fall back to alert pushes or unchanged replays would ring.
@@ -260,7 +284,13 @@ function chooseLiveActivityDelivery(input: {
         aggregate: nextAggregate,
         alert: input.replay
           ? null
-          : (alertForAttentionTransition({
+          : (alertForWakeTransition({
+              previousAggregate,
+              nextAggregate,
+              preferences,
+              nowMs: input.nowMs,
+            }) ??
+            alertForAttentionTransition({
               previousAggregate,
               nextAggregate,
               preferences,
@@ -692,7 +722,13 @@ const make = Effect.gen(function* () {
       alert =
         !preferences?.notificationsEnabled || !aggregate
           ? null
-          : (alertForAttentionTransition({
+          : (alertForWakeTransition({
+              previousAggregate,
+              nextAggregate: aggregate,
+              preferences,
+              nowMs: now.epochMilliseconds,
+            }) ??
+            alertForAttentionTransition({
               previousAggregate,
               nextAggregate: aggregate,
               preferences,

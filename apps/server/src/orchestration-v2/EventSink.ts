@@ -1,6 +1,8 @@
 import {
   CommandId,
+  pendingGuestMessageCount,
   type OrchestrationV2Run,
+  type ThreadSnoozeDependency,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   OrchestrationV2StoredEvent,
@@ -65,6 +67,16 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
+
+export interface RemoteApprovalCheck {
+  readonly parentThreadId: string;
+  readonly taskId: string;
+  readonly remoteEnvironmentId: string;
+  readonly remoteThreadId: string;
+  readonly snapshotSequence: number | null;
+  readonly lastAttentionSequence: number | null;
+  readonly pendingApprovalCount: number | null;
+}
 
 export interface EventSinkV2Shape {
   readonly write: (input: {
@@ -139,6 +151,29 @@ export interface EventSinkV2Shape {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
+    readonly snoozeDependency?: {
+      readonly targetThreadId: ThreadId;
+      readonly until: "settled" | "completed";
+      readonly preserveDependencyId?: string | undefined;
+    };
+    readonly resolveSnoozeDependencyId?: string;
+    readonly showSnoozeDependencyId?: string;
+    readonly attentionSequence?: number;
+    readonly expectedSnoozeDependencyId?: string;
+    readonly expectedThreadSequence?: number;
+    readonly remoteApprovalChecks?: ReadonlyArray<RemoteApprovalCheck>;
+    readonly undoSnoozeDependency?: ThreadSnoozeDependency;
+    readonly undoExpectedCommandId?: CommandId;
+    readonly remoteApprovalObservation?: {
+      readonly taskId: string;
+      readonly remoteEnvironmentId: string;
+      readonly remoteThreadId: string;
+      readonly snapshotSequence: number;
+      readonly lastAttentionSequence: number;
+      readonly pendingApprovalCount: number;
+      readonly unavailable?: boolean | undefined;
+    };
+    readonly cancelSnoozeDependency?: boolean;
     readonly acceptedAt: DateTime.Utc;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
@@ -191,6 +226,30 @@ export interface EventSinkV2Shape {
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
+  readonly approvalAttention: (threadId: ThreadId) => Effect.Effect<
+    {
+      readonly version: 1;
+      readonly snapshotSequence: number;
+      readonly lastAttentionSequence: number;
+      readonly pendingApprovalCount: number;
+      readonly available: boolean;
+    },
+    EventSinkV2Error
+  >;
+  readonly remoteApprovalObservation: (
+    threadId: ThreadId,
+    taskId: NodeId,
+  ) => Effect.Effect<
+    {
+      readonly snapshotSequence: number;
+      readonly lastAttentionSequence: number;
+      readonly pendingApprovalCount: number;
+    } | null,
+    EventSinkV2Error
+  >;
+  readonly remoteApprovalTasks: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<RemoteApprovalCheck>, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -355,9 +414,128 @@ const layerBase: Layer.Layer<
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        yield* Effect.forEach(
+          storedEvents,
+          (stored) =>
+            Effect.gen(function* () {
+              const event = stored.event;
+              let kind: "settled" | "completed" | "archived" | "deleted" | "attention" | null =
+                null;
+              if (event.type === "run.updated" && event.payload.status === "completed") {
+                const previous = yield* sql<{ readonly status: string }>`
+              SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}
+            `;
+                if (
+                  previous[0] !== undefined &&
+                  ["queued", "preparing", "starting", "running", "waiting"].includes(
+                    previous[0].status,
+                  )
+                ) {
+                  kind = "completed";
+                }
+              } else if (event.type === "thread.settled") {
+                const previous = yield* sql<{ readonly settled: string | null }>`
+              SELECT json_extract(payload_json, '$.settledOverride') AS settled
+              FROM orchestration_v2_projection_threads WHERE thread_id = ${event.threadId}
+            `;
+                if (previous[0] !== undefined && previous[0].settled !== "settled")
+                  kind = "settled";
+              } else if (event.type === "thread.archived") {
+                kind = "archived";
+              } else if (event.type === "thread.deleted") {
+                kind = "deleted";
+              } else if (
+                event.type === "runtime-request.updated" &&
+                event.payload.status === "pending" &&
+                event.payload.kind !== "dynamic_tool_call" &&
+                event.payload.kind !== "auth_refresh"
+              ) {
+                kind = "attention";
+              } else if (
+                event.type === "thread.guest-share-updated" &&
+                pendingGuestMessageCount(event.payload.guestShare) > 0
+              ) {
+                kind = "attention";
+              } else if (event.type === "run.updated" && event.payload.status === "failed") {
+                const previous = yield* sql<{ readonly status: string }>`
+              SELECT status FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}
+            `;
+                if (previous[0] !== undefined && previous[0].status !== "failed")
+                  kind = "attention";
+              }
+              if (kind !== null) {
+                yield* sql`
+                INSERT OR IGNORE INTO thread_snooze_transitions (target_thread_id, event_id, kind, occurred_at)
+                SELECT ${event.threadId}, ${event.id}, ${kind}, ${DateTime.formatIso(event.occurredAt)}
+                WHERE (${kind} = 'attention' AND EXISTS (SELECT 1 FROM thread_snooze_dependencies WHERE thread_id = ${event.threadId}))
+                   OR (${kind} != 'attention' AND (
+                     EXISTS (SELECT 1 FROM thread_snooze_dependencies WHERE target_thread_id = ${event.threadId})
+                     OR EXISTS (
+                       SELECT 1 FROM thread_snooze_undo u
+                       WHERE u.target_thread_id = ${event.threadId}
+                         AND (u.until_kind = ${kind} OR ${kind} IN ('archived', 'deleted'))
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_snooze_transitions previous
+                           WHERE previous.target_thread_id = u.target_thread_id
+                             AND previous.sequence > u.start_sequence
+                             AND (previous.kind = u.until_kind OR previous.kind IN ('archived', 'deleted'))
+                         )
+                     )
+                   ))
+            `;
+              }
+              if (
+                event.type === "runtime-request.updated" &&
+                event.payload.status === "pending" &&
+                !["user_input", "auth_refresh", "dynamic_tool_call"].includes(event.payload.kind)
+              ) {
+                const previous = yield* sql<{ readonly status: string }>`
+                  SELECT status FROM orchestration_v2_projection_runtime_requests
+                  WHERE runtime_request_id = ${event.payload.id}
+                `;
+                if (previous[0]?.status !== "pending") {
+                  yield* sql`
+                    WITH RECURSIVE ancestors(thread_id, path) AS (
+                      SELECT thread_id, ',' || thread_id || ','
+                      FROM orchestration_v2_projection_threads WHERE thread_id = ${event.threadId}
+                      UNION ALL
+                      SELECT json_extract(t.payload_json, '$.lineage.parentThreadId'), a.path || t.thread_id || ','
+                      FROM ancestors a JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+                      WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                        AND json_extract(t.payload_json, '$.creationSource') != 'provider'
+                        AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs run WHERE run.thread_id = t.thread_id AND run.status IN ('preparing', 'starting', 'running', 'waiting'))
+                        AND instr(a.path, ',' || json_extract(t.payload_json, '$.lineage.parentThreadId') || ',') = 0
+                    )
+                    INSERT INTO thread_approval_attention(thread_id, last_attention_sequence)
+                    SELECT thread_id, ${stored.sequence} FROM ancestors WHERE thread_id IS NOT NULL
+                    ON CONFLICT(thread_id) DO UPDATE SET last_attention_sequence = MAX(last_attention_sequence, excluded.last_attention_sequence)
+                  `;
+                }
+                yield* sql`
+                  WITH RECURSIVE ancestors(thread_id, path) AS (
+                    SELECT json_extract(payload_json, '$.lineage.parentThreadId'), ',' || thread_id || ','
+                    FROM orchestration_v2_projection_threads
+                    WHERE thread_id = ${event.threadId}
+                      AND json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                      AND json_extract(payload_json, '$.creationSource') != 'provider'
+                      AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs WHERE thread_id = ${event.threadId} AND status IN ('preparing', 'starting', 'running', 'waiting'))
+                    UNION ALL
+                    SELECT json_extract(t.payload_json, '$.lineage.parentThreadId'), a.path || t.thread_id || ','
+                    FROM ancestors a JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+                    WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                      AND instr(a.path, ',' || t.thread_id || ',') = 0
+                  )
+                  INSERT OR IGNORE INTO thread_snooze_transitions(target_thread_id, event_id, kind, occurred_at)
+                  SELECT a.thread_id, ${event.id} || ':ancestor:' || a.thread_id, 'attention', ${DateTime.formatIso(event.occurredAt)}
+                  FROM ancestors a JOIN thread_snooze_dependencies d ON d.thread_id = a.thread_id
+                `;
+              }
+              yield* projectionStore.apply(event);
+            }),
+          {
+            concurrency: 1,
+          },
+        );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -632,6 +810,50 @@ const layerBase: Layer.Layer<
         return { receipt: existing.value, storedEvents };
       });
 
+    const remoteApprovalTasks = (threadId: ThreadId) =>
+      sql<{
+        readonly parent_thread_id: string;
+        readonly task_id: string;
+        readonly remote_environment_id: string;
+        readonly remote_thread_id: string;
+        readonly snapshot_sequence: number | null;
+        readonly last_attention_sequence: number | null;
+        readonly pending_approval_count: number | null;
+      }>`
+      WITH RECURSIVE descendants(thread_id, path) AS (
+        SELECT ${threadId}, ',' || ${threadId} || ','
+        UNION ALL
+        SELECT t.thread_id, d.path || t.thread_id || ','
+        FROM descendants d JOIN orchestration_v2_projection_threads t
+          ON json_extract(t.payload_json, '$.lineage.parentThreadId') = d.thread_id
+        WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+          AND json_extract(t.payload_json, '$.creationSource') != 'provider'
+          AND instr(d.path, ',' || t.thread_id || ',') = 0
+      )
+      SELECT task.thread_id AS parent_thread_id, task.subagent_id AS task_id,
+        json_extract(task.payload_json, '$.remoteChild.environmentId') AS remote_environment_id,
+        json_extract(task.payload_json, '$.remoteChild.threadId') AS remote_thread_id,
+        o.snapshot_sequence, o.last_attention_sequence, o.pending_approval_count
+      FROM descendants d JOIN orchestration_v2_projection_subagents task ON task.thread_id = d.thread_id
+      LEFT JOIN remote_task_approval_observations o
+        ON o.parent_thread_id = task.thread_id AND o.task_id = task.subagent_id
+      WHERE json_type(task.payload_json, '$.remoteChild') = 'object'
+        AND json_extract(task.payload_json, '$.result') IS NULL
+      ORDER BY task.thread_id, task.subagent_id
+    `.pipe(
+        Effect.map((rows): ReadonlyArray<RemoteApprovalCheck> =>
+          rows.map((row) => ({
+            parentThreadId: row.parent_thread_id,
+            taskId: row.task_id,
+            remoteEnvironmentId: row.remote_environment_id,
+            remoteThreadId: row.remote_thread_id,
+            snapshotSequence: row.snapshot_sequence,
+            lastAttentionSequence: row.last_attention_sequence,
+            pendingApprovalCount: row.pending_approval_count,
+          })),
+        ),
+      );
+
     const commitCommandEffect = Effect.fn("orchestrationV2.EventSink.commitCommand")(function* (
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
@@ -651,16 +873,459 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (input.expectedThreadSequence !== undefined) {
+            const sequence = yield* eventStore.latestSequence({ threadId: input.threadId });
+            if (sequence !== input.expectedThreadSequence) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("The thread changed while its snooze was being updated."),
+              });
+            }
+          }
+
+          if (input.remoteApprovalChecks !== undefined) {
+            const actual = yield* remoteApprovalTasks(input.threadId);
+            if (
+              actual.length !== input.remoteApprovalChecks.length ||
+              actual.some((task, index) => {
+                const expected = input.remoteApprovalChecks?.[index];
+                return (
+                  expected === undefined ||
+                  task.parentThreadId !== expected.parentThreadId ||
+                  task.taskId !== expected.taskId ||
+                  task.remoteEnvironmentId !== expected.remoteEnvironmentId ||
+                  task.remoteThreadId !== expected.remoteThreadId ||
+                  task.snapshotSequence !== expected.snapshotSequence ||
+                  task.lastAttentionSequence !== expected.lastAttentionSequence ||
+                  task.pendingApprovalCount !== expected.pendingApprovalCount
+                );
+              }) ||
+              actual.some((task) => task.pendingApprovalCount !== 0)
+            ) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("Remote task approval status changed or is unavailable."),
+              });
+            }
+          }
+
+          let remoteAttentionOpened = false;
+          if (input.remoteApprovalObservation !== undefined) {
+            const observation = input.remoteApprovalObservation;
+            const task = yield* sql`
+              SELECT 1 FROM orchestration_v2_projection_subagents
+              WHERE subagent_id = ${observation.taskId} AND thread_id = ${input.threadId}
+                AND json_extract(payload_json, '$.remoteChild.environmentId') = ${observation.remoteEnvironmentId}
+                AND json_extract(payload_json, '$.remoteChild.threadId') = ${observation.remoteThreadId}
+                AND json_extract(payload_json, '$.result') IS NULL
+            `;
+            const previous = (yield* sql<{
+              readonly snapshot_sequence: number;
+              readonly last_attention_sequence: number;
+              readonly pending_approval_count: number;
+            }>`SELECT snapshot_sequence, last_attention_sequence, pending_approval_count
+              FROM remote_task_approval_observations
+              WHERE parent_thread_id = ${input.threadId} AND task_id = ${observation.taskId}`)[0];
+            if (
+              task.length === 0 ||
+              (!observation.unavailable &&
+                (observation.lastAttentionSequence > observation.snapshotSequence ||
+                  (previous !== undefined &&
+                    (observation.snapshotSequence < previous.snapshot_sequence ||
+                      observation.lastAttentionSequence < previous.last_attention_sequence))))
+            ) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error(
+                  "The remote approval observation is stale or no longer belongs to this task.",
+                ),
+              });
+            }
+            const snapshotSequence = observation.unavailable
+              ? Math.max(previous?.snapshot_sequence ?? 0, observation.snapshotSequence)
+              : observation.snapshotSequence;
+            const attentionSequence = observation.unavailable
+              ? Math.max(previous?.last_attention_sequence ?? 0, observation.lastAttentionSequence)
+              : observation.lastAttentionSequence;
+            const pendingCount = observation.unavailable ? -1 : observation.pendingApprovalCount;
+            remoteAttentionOpened = observation.unavailable
+              ? previous?.pending_approval_count !== -1 ||
+                attentionSequence > (previous?.last_attention_sequence ?? 0)
+              : attentionSequence > (previous?.last_attention_sequence ?? 0) ||
+                (pendingCount > 0 && (previous?.pending_approval_count ?? 0) <= 0);
+            yield* sql`
+              INSERT INTO remote_task_approval_observations(parent_thread_id, task_id, remote_environment_id, remote_thread_id, snapshot_sequence, last_attention_sequence, pending_approval_count)
+              VALUES (${input.threadId}, ${observation.taskId}, ${observation.remoteEnvironmentId}, ${observation.remoteThreadId}, ${snapshotSequence}, ${attentionSequence}, ${pendingCount})
+              ON CONFLICT(parent_thread_id, task_id) DO UPDATE SET
+                remote_environment_id = excluded.remote_environment_id, remote_thread_id = excluded.remote_thread_id,
+                snapshot_sequence = excluded.snapshot_sequence, last_attention_sequence = excluded.last_attention_sequence,
+                pending_approval_count = excluded.pending_approval_count
+            `;
+            if (remoteAttentionOpened) {
+              yield* sql`UPDATE thread_snooze_dependencies SET visibility = 'visible', revision = revision + 1 WHERE thread_id = ${input.threadId} AND visibility = 'hidden'`;
+            }
+          }
+
+          let savedUndo = false;
+          if (
+            ["thread.settle", "thread.snooze", "thread.snooze-until-thread"].includes(
+              input.commandType,
+            )
+          ) {
+            const captured = yield* sql<{ readonly dependency_id: string }>`
+              INSERT INTO thread_snooze_undo
+                (thread_id, dependency_id, target_thread_id, until_kind, start_sequence, visibility_sequence, visibility, revision, action_command_id)
+              SELECT thread_id, dependency_id, target_thread_id, until_kind, start_sequence, visibility_sequence, visibility, 0, ${input.commandId}
+              FROM thread_snooze_dependencies WHERE thread_id = ${input.threadId}
+              ON CONFLICT(thread_id) DO UPDATE SET dependency_id = excluded.dependency_id,
+                target_thread_id = excluded.target_thread_id, until_kind = excluded.until_kind,
+                start_sequence = excluded.start_sequence, visibility_sequence = excluded.visibility_sequence,
+                visibility = excluded.visibility, revision = 0, action_command_id = excluded.action_command_id
+              RETURNING dependency_id
+            `;
+            savedUndo = captured.length > 0;
+          }
+          if (
+            !savedUndo &&
+            input.undoSnoozeDependency === undefined &&
+            input.commandType !== "thread.visit" &&
+            input.commandType !== "thread.mark-unread"
+          ) {
+            yield* sql`DELETE FROM thread_snooze_undo WHERE thread_id = ${input.threadId}`;
+          }
+
+          if (input.remoteApprovalChecks !== undefined) {
+            const pending = yield* sql`
+              SELECT 1 WHERE EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runtime_requests
+                WHERE thread_id = ${input.threadId} AND status = 'pending'
+              ) OR EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_threads t,
+                  json_each(t.payload_json, '$.guestShare.messages') message
+                WHERE t.thread_id = ${input.threadId}
+                  AND json_extract(message.value, '$.status') = 'pending'
+              ) OR EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs run
+                LEFT JOIN orchestration_v2_projection_messages message
+                  ON message.message_id = json_extract(run.payload_json, '$.userMessageId')
+                WHERE run.thread_id = ${input.threadId} AND run.status = 'queued'
+                  AND json_extract(message.payload_json, '$.notification') IS NULL
+                  AND json_extract(message.payload_json, '$.delegatedCompletion') IS NULL
+              )
+            `;
+            if (pending.length > 0)
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("The thread has a pending request or queued message."),
+              });
+            const childRequests = yield* sql`
+              WITH RECURSIVE descendants(thread_id, path) AS (
+                SELECT thread_id, ',' || thread_id || ',' FROM orchestration_v2_projection_threads
+                WHERE json_extract(payload_json, '$.lineage.parentThreadId') = ${input.threadId}
+                  AND json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                UNION ALL
+                SELECT t.thread_id, d.path || t.thread_id || ','
+                FROM descendants d JOIN orchestration_v2_projection_threads t
+                  ON json_extract(t.payload_json, '$.lineage.parentThreadId') = d.thread_id
+                WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                  AND instr(d.path, ',' || t.thread_id || ',') = 0
+              )
+              SELECT 1 FROM descendants d
+              JOIN orchestration_v2_projection_threads t ON t.thread_id = d.thread_id
+              JOIN orchestration_v2_projection_runtime_requests r ON r.thread_id = d.thread_id
+              WHERE r.status = 'pending' AND r.kind NOT IN ('user_input', 'auth_refresh', 'dynamic_tool_call')
+                AND json_extract(t.payload_json, '$.creationSource') != 'provider'
+                AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs run WHERE run.thread_id = d.thread_id AND run.status IN ('preparing', 'starting', 'running', 'waiting'))
+              LIMIT 1
+            `;
+            if (childRequests.length > 0)
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("A subagent needs approval."),
+              });
+          }
+
+          let undoWake:
+            | { readonly kind: "settled" | "completed" | "archived" | "deleted" }
+            | undefined;
+          if (input.undoSnoozeDependency !== undefined) {
+            const dependency = input.undoSnoozeDependency;
+            const history = (yield* sql<{
+              readonly dependency_id: string;
+              readonly target_thread_id: string;
+              readonly until_kind: string;
+              readonly start_sequence: number;
+              readonly visibility_sequence: number;
+              readonly visibility: string;
+              readonly revision: number;
+              readonly action_command_id: string;
+            }>`SELECT dependency_id, target_thread_id, until_kind, start_sequence, visibility_sequence, visibility, revision, action_command_id
+              FROM thread_snooze_undo WHERE thread_id = ${input.threadId}`)[0];
+            const currentSequence =
+              (yield* sql<{ readonly sequence: number }>`
+              SELECT COALESCE(MAX(sequence), 0) AS sequence FROM orchestration_events
+              WHERE stream_id = ${input.threadId} AND event_type NOT IN ('thread.visited', 'thread.marked-unread')
+            `)[0]?.sequence ?? 0;
+            const reverse =
+              yield* sql`SELECT 1 FROM thread_snooze_dependencies WHERE thread_id = ${dependency.targetThreadId} AND target_thread_id = ${input.threadId}`;
+            if (
+              history === undefined ||
+              history.action_command_id !== input.undoExpectedCommandId ||
+              history.dependency_id !== dependency.dependencyId ||
+              history.target_thread_id !== dependency.targetThreadId ||
+              history.until_kind !== dependency.until ||
+              history.visibility !== dependency.visibility ||
+              history.revision !== currentSequence
+            ) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("The previous wait can no longer be restored."),
+              });
+            }
+            undoWake = (yield* sql<{
+              readonly kind: "settled" | "completed" | "archived" | "deleted";
+            }>`
+              SELECT kind FROM thread_snooze_transitions
+              WHERE target_thread_id = ${history.target_thread_id} AND sequence > ${history.start_sequence}
+                AND (kind = ${history.until_kind} OR kind IN ('archived', 'deleted'))
+              ORDER BY sequence LIMIT 1
+            `)[0];
+            if (undoWake === undefined && reverse.length > 0) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("The previous wait would create a direct cycle."),
+              });
+            }
+            yield* sql`DELETE FROM thread_snooze_dependencies WHERE thread_id = ${input.threadId}`;
+            if (undoWake === undefined) {
+              yield* sql`
+                INSERT INTO thread_snooze_dependencies (thread_id, dependency_id, target_thread_id, until_kind, start_sequence, visibility_sequence, visibility, revision)
+                VALUES (${input.threadId}, ${history.dependency_id}, ${history.target_thread_id}, ${history.until_kind}, ${history.start_sequence}, ${history.visibility_sequence}, ${history.visibility}, 1)
+              `;
+            }
+            yield* sql`DELETE FROM thread_snooze_undo WHERE thread_id = ${input.threadId}`;
+          }
+
+          if (input.undoSnoozeDependency !== undefined) {
+          } else if (input.showSnoozeDependencyId !== undefined) {
+            const updated = yield* sql<{ readonly dependency_id: string }>`
+              UPDATE thread_snooze_dependencies SET visibility = 'visible', revision = revision + 1
+              WHERE thread_id = ${input.threadId} AND dependency_id = ${input.showSnoozeDependencyId}
+                AND visibility_sequence < ${input.attentionSequence ?? 0}
+              RETURNING dependency_id
+            `;
+            if (updated.length === 0) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+              });
+            }
+          } else if (input.resolveSnoozeDependencyId !== undefined) {
+            const removed = yield* sql<{ readonly dependency_id: string }>`
+              DELETE FROM thread_snooze_dependencies
+              WHERE thread_id = ${input.threadId} AND dependency_id = ${input.resolveSnoozeDependencyId}
+              RETURNING dependency_id
+            `;
+            if (removed.length === 0) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("The snooze dependency changed."),
+              });
+            }
+          } else if (input.snoozeDependency !== undefined) {
+            const { targetThreadId, until } = input.snoozeDependency;
+            const targets = yield* sql<{
+              readonly settled_override: string | null;
+              readonly settled_at: string | null;
+              readonly deleted_at: string | null;
+              readonly archived_at: string | null;
+            }>`
+              SELECT json_extract(payload_json, '$.settledOverride') AS settled_override,
+                json_extract(payload_json, '$.settledAt') AS settled_at, deleted_at, archived_at
+              FROM orchestration_v2_projection_threads WHERE thread_id = ${targetThreadId}
+            `;
+            const reverse = yield* sql<{ readonly thread_id: string }>`
+              SELECT thread_id FROM thread_snooze_dependencies
+              WHERE thread_id = ${targetThreadId} AND target_thread_id = ${input.threadId}
+            `;
+            const target = targets[0];
+            if (
+              targetThreadId === input.threadId ||
+              target === undefined ||
+              target.deleted_at !== null ||
+              target.archived_at !== null ||
+              reverse.length > 0 ||
+              (until === "settled" &&
+                (target.settled_override === "settled" || target.settled_at !== null))
+            ) {
+              return yield* new EventSinkWriteError({
+                eventCount: input.events.length,
+                commandId: input.commandId,
+                cause: new Error("Invalid or unavailable snooze dependency target."),
+              });
+            }
+            const preserved = input.snoozeDependency.preserveDependencyId;
+            if (preserved !== undefined && preserved !== input.commandId) {
+              const rows = yield* sql<{ readonly pending: number }>`
+                SELECT EXISTS (
+                  SELECT 1 FROM thread_snooze_transitions t
+                  WHERE t.target_thread_id = d.target_thread_id AND t.sequence > d.start_sequence
+                    AND (t.kind = d.until_kind OR t.kind IN ('archived', 'deleted'))
+                ) AS pending
+                FROM thread_snooze_dependencies d
+                WHERE d.thread_id = ${input.threadId} AND d.dependency_id = ${preserved}
+              `;
+              if (rows.length === 0 || rows[0]?.pending !== 0) {
+                return yield* new EventSinkWriteError({
+                  eventCount: input.events.length,
+                  commandId: input.commandId,
+                });
+              }
+              yield* sql`UPDATE thread_snooze_dependencies SET visibility = 'hidden', visibility_sequence = COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'thread_snooze_transitions'), 0), revision = revision + 1 WHERE thread_id = ${input.threadId} AND dependency_id = ${preserved}`;
+            } else
+              yield* sql`
+              INSERT INTO thread_snooze_dependencies
+                (thread_id, dependency_id, target_thread_id, until_kind, start_sequence, visibility_sequence, visibility, revision)
+              VALUES (${input.threadId}, ${input.commandId}, ${targetThreadId}, ${until},
+                COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'thread_snooze_transitions'), 0), COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'thread_snooze_transitions'), 0), 'hidden', 1)
+              ON CONFLICT(thread_id) DO UPDATE SET dependency_id = excluded.dependency_id,
+                target_thread_id = excluded.target_thread_id, until_kind = excluded.until_kind,
+                start_sequence = excluded.start_sequence, visibility = excluded.visibility,
+                visibility_sequence = excluded.visibility_sequence,
+                revision = thread_snooze_dependencies.revision + 1
+            `;
+          } else if (
+            input.cancelSnoozeDependency ||
+            [
+              "thread.unsnooze",
+              "thread.snooze",
+              "thread.settle",
+              "thread.pin",
+              "thread.archive",
+              "thread.delete",
+            ].includes(input.commandType)
+          ) {
+            if (input.expectedSnoozeDependencyId !== undefined) {
+              const removed =
+                yield* sql`DELETE FROM thread_snooze_dependencies WHERE thread_id = ${input.threadId} AND dependency_id = ${input.expectedSnoozeDependencyId} RETURNING dependency_id`;
+              if (removed.length === 0)
+                return yield* new EventSinkWriteError({
+                  eventCount: input.events.length,
+                  commandId: input.commandId,
+                  cause: new Error("The snooze dependency changed."),
+                });
+            } else {
+              yield* sql`DELETE FROM thread_snooze_dependencies WHERE thread_id = ${input.threadId}`;
+            }
+          }
+          if (input.commandType === "runtime-request.respond") {
+            const wake = input.events.findLast(
+              (event) =>
+                event.type === "thread.unsnoozed" || event.type === "thread.metadata-updated",
+            );
+            if (
+              (wake?.type === "thread.unsnoozed" || wake?.type === "thread.metadata-updated") &&
+              wake.payload.snoozeDependency?.visibility === "visible"
+            ) {
+              yield* sql`
+                UPDATE thread_snooze_dependencies SET visibility = 'visible', revision = revision + 1
+                WHERE thread_id = ${input.threadId} AND dependency_id = ${wake.payload.snoozeDependency.dependencyId}
+              `;
+            }
+          }
+
           const runId = input.updateDelegatedCompletionOnlyRunId;
           const normalized = yield* normalizeEvents(
             runId === undefined
               ? input.events
               : yield* updateDelegatedCompletionOnly(input.events, (id) => id === runId),
           );
+          const remoteNormalized = remoteAttentionOpened
+            ? normalized.map((event) =>
+                event.type === "thread.metadata-updated" &&
+                event.threadId === input.threadId &&
+                event.payload.snoozeDependency?.visibility === "hidden"
+                  ? {
+                      ...event,
+                      payload: {
+                        ...event.payload,
+                        snoozeDependency: {
+                          ...event.payload.snoozeDependency,
+                          visibility: "visible" as const,
+                        },
+                        lastSnoozeWakeAt: input.acceptedAt,
+                        updatedAt: input.acceptedAt,
+                      },
+                    }
+                  : event,
+              )
+            : normalized;
+          const eventsToStore =
+            undoWake === undefined
+              ? remoteNormalized
+              : remoteNormalized.map((event) => {
+                  if (event.type !== "thread.snoozed" || input.undoSnoozeDependency === undefined)
+                    return event;
+                  return {
+                    ...event,
+                    type: "thread.unsnoozed" as const,
+                    payload: {
+                      ...event.payload,
+                      snoozeDependency: null,
+                      snoozedAt: null,
+                      lastSnoozeWakeAt: input.acceptedAt,
+                      snoozeDependencyWake: {
+                        targetThreadId: input.undoSnoozeDependency.targetThreadId,
+                        reason: undoWake!.kind,
+                        eventId: input.commandId,
+                        occurredAt: DateTime.formatIso(input.acceptedAt),
+                      },
+                    },
+                  };
+                });
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
-            events: normalized,
+            events: eventsToStore,
           });
+          if (remoteAttentionOpened) {
+            const sequence = storedEvents.at(-1)?.sequence ?? 0;
+            yield* sql`
+              WITH RECURSIVE ancestors(thread_id, path) AS (
+                SELECT ${input.threadId}, ',' || ${input.threadId} || ','
+                UNION ALL
+                SELECT json_extract(t.payload_json, '$.lineage.parentThreadId'), a.path || t.thread_id || ','
+                FROM ancestors a JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+                WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                  AND instr(a.path, ',' || json_extract(t.payload_json, '$.lineage.parentThreadId') || ',') = 0
+              )
+              INSERT INTO thread_approval_attention(thread_id, last_attention_sequence)
+              SELECT thread_id, ${sequence} FROM ancestors WHERE thread_id IS NOT NULL
+              ON CONFLICT(thread_id) DO UPDATE SET last_attention_sequence = MAX(last_attention_sequence, excluded.last_attention_sequence)
+            `;
+            yield* sql`
+              WITH RECURSIVE ancestors(thread_id, path) AS (
+                SELECT json_extract(payload_json, '$.lineage.parentThreadId'), ',' || thread_id || ','
+                FROM orchestration_v2_projection_threads WHERE thread_id = ${input.threadId}
+                  AND json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                UNION ALL
+                SELECT json_extract(t.payload_json, '$.lineage.parentThreadId'), a.path || t.thread_id || ','
+                FROM ancestors a JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+                WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                  AND instr(a.path, ',' || t.thread_id || ',') = 0
+              )
+              INSERT OR IGNORE INTO thread_snooze_transitions(target_thread_id, event_id, kind, occurred_at)
+              SELECT a.thread_id, ${input.commandId} || ':remote-ancestor:' || a.thread_id, 'attention', ${DateTime.formatIso(input.acceptedAt)}
+              FROM ancestors a JOIN thread_snooze_dependencies d ON d.thread_id = a.thread_id
+            `;
+          }
           // A Stop that changes nothing can still queue the stop of its delegated tasks.
           const sequence =
             storedEvents.at(-1)?.sequence ??
@@ -672,6 +1337,8 @@ const layerBase: Layer.Layer<
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
+          if (savedUndo)
+            yield* sql`UPDATE thread_snooze_undo SET revision = ${sequence} WHERE thread_id = ${input.threadId}`;
           const outcomes = yield* applyStoredEvents(storedEvents);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -986,6 +1653,73 @@ const layerBase: Layer.Layer<
                 cause,
               }),
           ),
+        ),
+      approvalAttention: Effect.fn("EventSink.approvalAttention")((threadId) =>
+        Effect.gen(function* () {
+          const row = (yield* sql<{
+            readonly snapshot_sequence: number;
+            readonly last_attention_sequence: number;
+            readonly pending_approval_count: number;
+            readonly unavailable_count: number;
+          }>`
+            WITH RECURSIVE descendants(thread_id, path) AS (
+              SELECT ${threadId}, ',' || ${threadId} || ','
+              UNION ALL
+              SELECT t.thread_id, d.path || t.thread_id || ','
+              FROM descendants d JOIN orchestration_v2_projection_threads t
+                ON json_extract(t.payload_json, '$.lineage.parentThreadId') = d.thread_id
+              WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
+                AND json_extract(t.payload_json, '$.creationSource') != 'provider'
+                AND instr(d.path, ',' || t.thread_id || ',') = 0
+            )
+            SELECT
+              COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orchestration_events'), 0) AS snapshot_sequence,
+              COALESCE((SELECT last_attention_sequence FROM thread_approval_attention WHERE thread_id = ${threadId}), 0) AS last_attention_sequence,
+              (SELECT COUNT(*) FROM descendants d
+                JOIN orchestration_v2_projection_runtime_requests r ON r.thread_id = d.thread_id
+                WHERE r.status = 'pending' AND r.kind NOT IN ('user_input', 'auth_refresh', 'dynamic_tool_call')
+                  AND EXISTS (SELECT 1 FROM orchestration_v2_projection_runs run WHERE run.thread_id = d.thread_id AND run.status IN ('preparing', 'starting', 'running', 'waiting'))
+              ) + (SELECT COALESCE(SUM(MAX(o.pending_approval_count, 0)), 0) FROM descendants d
+                JOIN orchestration_v2_projection_subagents task ON task.thread_id = d.thread_id
+                LEFT JOIN remote_task_approval_observations o ON o.parent_thread_id = task.thread_id AND o.task_id = task.subagent_id
+                WHERE json_type(task.payload_json, '$.remoteChild') = 'object' AND json_extract(task.payload_json, '$.result') IS NULL
+              ) AS pending_approval_count,
+              (SELECT COUNT(*) FROM descendants d
+                JOIN orchestration_v2_projection_subagents task ON task.thread_id = d.thread_id
+                LEFT JOIN remote_task_approval_observations o ON o.parent_thread_id = task.thread_id AND o.task_id = task.subagent_id
+                WHERE json_type(task.payload_json, '$.remoteChild') = 'object' AND json_extract(task.payload_json, '$.result') IS NULL
+                  AND (o.task_id IS NULL OR o.pending_approval_count < 0)
+              ) AS unavailable_count
+          `)[0]!;
+          return {
+            version: 1 as const,
+            snapshotSequence: row.snapshot_sequence,
+            lastAttentionSequence: row.last_attention_sequence,
+            pendingApprovalCount: row.pending_approval_count,
+            available: row.unavailable_count === 0,
+          };
+        }).pipe(Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause }))),
+      ),
+      remoteApprovalObservation: Effect.fn("EventSink.remoteApprovalObservation")(
+        (threadId, taskId) =>
+          Effect.gen(function* () {
+            const row = (yield* sql<{
+              readonly snapshot_sequence: number;
+              readonly last_attention_sequence: number;
+              readonly pending_approval_count: number;
+            }>`SELECT snapshot_sequence, last_attention_sequence, pending_approval_count FROM remote_task_approval_observations WHERE parent_thread_id = ${threadId} AND task_id = ${taskId}`)[0];
+            return row === undefined
+              ? null
+              : {
+                  snapshotSequence: row.snapshot_sequence,
+                  lastAttentionSequence: row.last_attention_sequence,
+                  pendingApprovalCount: row.pending_approval_count,
+                };
+          }).pipe(Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause }))),
+      ),
+      remoteApprovalTasks: (threadId) =>
+        remoteApprovalTasks(threadId).pipe(
+          Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause })),
         ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(

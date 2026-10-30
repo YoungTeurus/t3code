@@ -85,19 +85,21 @@ export function startThreadNotifications(
       threadId?: string;
     };
     const title =
-      kind === "completion"
-        ? "Thread completed"
-        : status === "approval"
-          ? "Approval needed"
-          : status === "limited"
-            ? "Usage limit reached"
-            : status === "failed"
-              ? "Thread failed"
-              : status === "request"
-                ? "Guest request"
-                : "Input needed";
+      kind === "wake"
+        ? "Waiting thread is ready"
+        : kind === "completion"
+          ? "Thread completed"
+          : status === "approval"
+            ? "Approval needed"
+            : status === "limited"
+              ? "Usage limit reached"
+              : status === "failed"
+                ? "Thread failed"
+                : status === "request"
+                  ? "Guest request"
+                  : "Input needed";
     if (hasNotificationSound(mode)) {
-      void playNotificationSound(kind, () =>
+      void playNotificationSound(kind === "wake" ? "completion" : kind, () =>
         hasNotificationSound(getClientSettings().notificationMode),
       );
     }
@@ -108,13 +110,18 @@ export function startThreadNotifications(
       (active.environmentId !== environmentId || active.threadId !== thread.id)
     ) {
       const toastId = toastManager.add({
-        type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
+        type:
+          kind === "completion" || kind === "wake"
+            ? "success"
+            : status === "failed"
+              ? "error"
+              : "warning",
         title,
         description: thread.title,
         data: {
           hideCopyButton: true,
           leadingIcon:
-            kind === "completion" ? (
+            kind === "completion" || kind === "wake" ? (
               <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
             ) : status === "approval" ? (
               <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
@@ -217,6 +224,7 @@ export function startThreadNotifications(
         attention,
         settled,
         completedAt: settled && Number.isFinite(completedAt) ? completedAt : null,
+        dependencyWakeId: thread.snoozeDependencyWake?.eventId ?? null,
       };
       next.set(thread.id, state);
       changed.push([prior, state]);

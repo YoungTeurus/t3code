@@ -31,7 +31,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
+    "Pin, snooze, settle, archive, or mark a thread unread. Omit `threadId` for this thread. `snooze` needs `snoozedUntil`; `snooze-until-thread` needs `targetThreadId` and `until`. To re-hide a previously observed wait, pass its `dependencyId` as `expectedDependencyId`. Settling this thread applies at turn end. A failed turn or queued message leaves it active.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -39,6 +39,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "pin",
       "unpin",
       "snooze",
+      "snooze-until-thread",
       "unsnooze",
       "settle",
       "unsettle",
@@ -47,6 +48,9 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "mark_unread",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
+    targetThreadId: Schema.optional(ThreadId),
+    until: Schema.optional(Schema.Literals(["settled", "completed"])),
+    expectedDependencyId: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
   }),
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,

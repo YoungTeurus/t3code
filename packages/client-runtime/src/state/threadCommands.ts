@@ -46,6 +46,8 @@ import {
   setThreadAutoSettle,
   settleThread,
   snoozeThread,
+  snoozeThreadUntilThread,
+  undoSnoozeDependency,
   startThreadTurn,
   stopThreadSession,
   unarchiveThread,
@@ -169,6 +171,18 @@ export function createThreadEnvironmentAtoms<R, E>(
     snooze: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:snooze",
       execute: snoozeThread,
+      scheduler,
+      concurrency,
+    }),
+    snoozeUntilThread: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:snooze-until-thread",
+      execute: snoozeThreadUntilThread,
+      scheduler,
+      concurrency,
+    }),
+    undoSnoozeDependency: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:undo-snooze-dependency",
+      execute: undoSnoozeDependency,
       scheduler,
       concurrency,
     }),
@@ -384,6 +398,7 @@ export function createThreadEnvironmentAtoms<R, E>(
             pinOrderKey: null,
             snoozedAt: null,
             snoozedUntil: null,
+            snoozeDependency: null,
           },
     ),
     unsettle: optimistic.wrap(commands.unsettle, (thread, input, now) => ({
@@ -402,6 +417,7 @@ export function createThreadEnvironmentAtoms<R, E>(
             ...thread,
             pendingRuntimeRequest: null,
             snoozedUntil: DateTime.makeUnsafe(input.snoozedUntil),
+            snoozeDependency: null,
             snoozedAt: now,
           },
     ),
@@ -409,6 +425,7 @@ export function createThreadEnvironmentAtoms<R, E>(
       ...thread,
       snoozedUntil: null,
       snoozedAt: null,
+      snoozeDependency: null,
     })),
     setAutoSettle: optimistic.wrap(commands.setAutoSettle, (thread, input, now) => ({
       ...thread,

@@ -9,6 +9,7 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
+import { requestSnoozeUntilThread } from "./SnoozeUntilThreadDialog";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
@@ -896,6 +897,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     settleThread,
     unsettleThread,
     snoozeThread,
+    snoozeUntilThread,
     unsnoozeThread,
     pinThread,
     unpinThread,
@@ -2568,6 +2570,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
                 snooze: configLoaded,
+                snoozeDependency:
+                  serverConfigs.get(thread.environmentId)?.environment.capabilities
+                    .threadSnoozeDependency === true,
                 pinning: configLoaded,
                 titleRegeneration: configLoaded,
               },
@@ -2578,6 +2583,27 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
+        if (clicked.value === "snooze:thread") {
+          const choice = await requestSnoozeUntilThread(
+            threadRef.environmentId,
+            threadRef.threadId,
+            thread.snoozeDependency ?? null,
+          );
+          if (choice) {
+            const result = await snoozeUntilThread(threadRef, choice);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to snooze thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+          }
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"
@@ -3246,11 +3272,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               actionSweep?.keys.has(threadKey) ? actionSweep.action : null
                             }
                             snoozeWakeLabelText={
-                              section === "snoozed" && thread.snoozedUntil != null
-                                ? snoozeWakeLabel(thread.snoozedUntil, {
-                                    now: new Date().toISOString(),
-                                  })
-                                : null
+                              section === "snoozed" && thread.snoozeDependency != null
+                                ? `Waiting for ${thread.snoozeDependency.until === "settled" ? "settlement" : "successful run"}: ${threadByKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.snoozeDependency.targetThreadId)))?.title ?? "thread"}`
+                                : section === "snoozed" && thread.snoozedUntil != null
+                                  ? snoozeWakeLabel(thread.snoozedUntil, {
+                                      now: new Date().toISOString(),
+                                    })
+                                  : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
                             isActive={routeRowThreadKey === threadKey}

@@ -479,11 +479,21 @@ export function buildThreadListV2ListItems(input: {
   readonly shelfPreferencesLoading?: boolean;
 }): ThreadListV2ListItem[] {
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
+  const threadTitles = new Map(
+    input.items.map(({ thread }) => [`${thread.environmentId}:${thread.id}`, thread.title]),
+  );
   const threadItems = input.items.map((item): ThreadListV2ListItem => {
+    const dependency = item.thread.snoozeDependency;
+    const target =
+      dependency == null
+        ? undefined
+        : threadTitles.get(`${item.thread.environmentId}:${dependency.targetThreadId}`);
     const snoozeWakeLabelText =
-      item.snoozed && item.thread.snoozedUntil != null && input.snoozeLabelNow !== undefined
-        ? snoozeWakeLabel(item.thread.snoozedUntil, { now: input.snoozeLabelNow })
-        : undefined;
+      item.snoozed && dependency != null
+        ? `Waiting: ${target ?? "thread"}`
+        : item.snoozed && item.thread.snoozedUntil != null && input.snoozeLabelNow !== undefined
+          ? snoozeWakeLabel(item.thread.snoozedUntil, { now: input.snoozeLabelNow })
+          : undefined;
     // Put the clock on items so recycler equality limits ticks to rows displaying snooze preset times.
     const snoozePresetMinute =
       !item.snoozed &&

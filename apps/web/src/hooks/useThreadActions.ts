@@ -10,6 +10,7 @@ import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
   AuthSourceControlWriteScope,
+  CommandId,
   EnvironmentAuthorizationError,
   EnvironmentId,
   type ScopedThreadRef,
@@ -35,6 +36,7 @@ import { vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
+import { randomUUID } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import {
   readEnvironmentServerConfigLoaded,
@@ -290,6 +292,15 @@ export function useThreadActions() {
   const snoozeThreadMutation = useOrchestrationCommand(threadEnvironment.snooze, {
     reportFailure: false,
   });
+  const snoozeUntilThreadMutation = useOrchestrationCommand(threadEnvironment.snoozeUntilThread, {
+    reportFailure: false,
+  });
+  const undoSnoozeDependencyMutation = useOrchestrationCommand(
+    threadEnvironment.undoSnoozeDependency,
+    {
+      reportFailure: false,
+    },
+  );
   const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
     reportFailure: false,
   });
@@ -742,9 +753,10 @@ export function useThreadActions() {
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     ThreadUndo.invalidate("snooze", scopedThreadKey(target));
     const action = ThreadUndo.begin("settle", scopedThreadKey(target));
+    const commandId = CommandId.make(randomUUID());
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId },
+      input: { threadId: target.threadId, commandId },
     });
     if (result._tag !== "Success") {
       action.finish();
@@ -756,7 +768,7 @@ export function useThreadActions() {
     showThreadUndoNotice({
       action: "Settled",
       claim: action,
-      undo: () => runUndoPlan(target, undoPlan),
+      undo: () => runUndoPlan(target, undoPlan, commandId),
       failureTitle: "Failed to undo settle",
     });
     return result;
@@ -858,9 +870,10 @@ export function useThreadActions() {
       );
     }
     const action = ThreadUndo.begin("snooze", scopedThreadKey(target));
+    const commandId = CommandId.make(randomUUID());
     const result = await snoozeThreadMutation({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId, snoozedUntil },
+      input: { threadId: target.threadId, snoozedUntil, commandId },
     });
     if (result._tag !== "Success") {
       action.finish();
@@ -869,17 +882,31 @@ export function useThreadActions() {
     showThreadUndoNotice({
       action: "Snoozed",
       claim: action,
-      undo: () => runUndoPlan(target, ThreadUndo.planThreadUndo("snooze")),
+      undo: () =>
+        runUndoPlan(target, ThreadUndo.planThreadUndo("snooze", resolved?.thread), commandId),
       failureTitle: "Failed to wake thread",
     });
     return result;
   };
 
-  const runUndoPlan = (target: ScopedThreadRef, plan: ThreadUndo.ThreadUndoPlan) =>
+  const runUndoPlan = (
+    target: ScopedThreadRef,
+    plan: ThreadUndo.ThreadUndoPlan,
+    expectedCommandId?: CommandId,
+  ) =>
     ThreadUndo.executeThreadUndo(
       plan,
       async (step) => {
         switch (step.action) {
+          case "restore-dependency":
+            return undoSnoozeDependencyMutation({
+              environmentId: target.environmentId,
+              input: {
+                threadId: target.threadId,
+                dependency: step.dependency,
+                expectedCommandId: expectedCommandId!,
+              },
+            });
           case "unsettle":
             return unsettleThread(target);
           case "unsnooze":
@@ -935,6 +962,43 @@ export function useThreadActions() {
     settleThread,
     unsettleThread,
     snoozeThread,
+    snoozeUntilThread: async (
+      target: ScopedThreadRef,
+      input: {
+        targetThreadId: ThreadId;
+        until: "settled" | "completed";
+        expectedDependencyId?: string;
+      },
+    ) => {
+      const before = readThreadShell(target);
+      const action = ThreadUndo.begin("snooze", scopedThreadKey(target));
+      const commandId = CommandId.make(randomUUID());
+      const result = await snoozeUntilThreadMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, ...input, commandId },
+      });
+      if (result._tag !== "Success") {
+        action.finish();
+        return result;
+      }
+      showThreadUndoNotice({
+        action: "Snoozed",
+        claim: action,
+        undo: () =>
+          before?.snoozeDependency != null
+            ? runUndoPlan(target, ThreadUndo.planThreadUndo("snooze", before), commandId)
+            : unsnoozeThreadMutation({
+                environmentId: target.environmentId,
+                input: {
+                  threadId: target.threadId,
+                  reason: "user",
+                  expectedDependencyId: commandId,
+                },
+              }),
+        failureTitle: "Failed to undo snooze",
+      });
+      return result;
+    },
     unsnoozeThread,
     pinThread,
     unpinThread,

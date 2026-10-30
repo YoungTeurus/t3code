@@ -202,10 +202,30 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === undefined
             ? {}
             : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
+          ...(input.afterApprovalAttentionSequence === undefined
+            ? {}
+            : { afterApprovalAttentionSequence: input.afterApprovalAttentionSequence }),
+          ...(input.afterApprovalPendingCount === undefined
+            ? {}
+            : { afterApprovalPendingCount: input.afterApprovalPendingCount }),
+          ...(input.afterApprovalAvailable === undefined
+            ? {}
+            : { afterApprovalAvailable: input.afterApprovalAvailable }),
         },
       );
       remaining -= chunk;
-      if (!result.timedOut || remaining <= 0) return result;
+      if (
+        !result.timedOut ||
+        remaining <= 0 ||
+        (input.afterApprovalAttentionSequence !== undefined &&
+          (result.approvalAttention === undefined ||
+            result.approvalAttention.lastAttentionSequence > input.afterApprovalAttentionSequence ||
+            (input.afterApprovalPendingCount !== undefined &&
+              result.approvalAttention.pendingApprovalCount !== input.afterApprovalPendingCount) ||
+            (input.afterApprovalAvailable !== undefined &&
+              result.approvalAttention.available !== input.afterApprovalAvailable)))
+      )
+        return result;
       // Later pieces wait for the run the first one picked, not a newer one.
       runId = result.runId ?? undefined;
     }

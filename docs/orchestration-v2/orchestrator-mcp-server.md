@@ -409,6 +409,13 @@ client's `effectiveSnoozed`, so agents and the sidebar agree: a snoozed thread
 wakes early only when it has a pending request or fails after snoozing. Completed
 runs, background wakes, and delegated completions keep it snoozed.
 
+`t3_thread_organize` also accepts `action: "snooze-until-thread"` with
+`targetThreadId` and `until` set to `"settled"` or `"completed"`. The target
+must be in the same environment. `completed` waits for a successful run;
+settling includes manual and automatic settlement. Archive or deletion of the
+target also wakes the waiting thread. `unsnooze` cancels the wait. Waking does
+not start a run.
+
 ### `t3_thread_update`
 
 Updates metadata for the calling thread or any other thread in the environment.

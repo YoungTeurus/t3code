@@ -419,6 +419,7 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   maxCharsPerItem: Schema.optional(clampedPositiveInt(50_000)).annotate({
     description: "Max chars per item, 1 to 50000.",
   }),
+  includeApprovalAttention: Schema.optional(Schema.Boolean),
 });
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
@@ -489,12 +490,22 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
 });
 export type OrchestratorMcpThreadTimelineItem = typeof OrchestratorMcpThreadTimelineItem.Type;
 
+export const OrchestratorMcpApprovalAttention = Schema.Struct({
+  version: Schema.Literal(1),
+  snapshotSequence: NonNegativeInt,
+  lastAttentionSequence: NonNegativeInt,
+  pendingApprovalCount: NonNegativeInt,
+  available: Schema.Boolean,
+});
+export type OrchestratorMcpApprovalAttention = typeof OrchestratorMcpApprovalAttention.Type;
+
 export const OrchestratorMcpThreadReadResult = Schema.Struct({
   thread: OrchestratorMcpThreadDetail,
   recentRuns: Schema.Array(OrchestratorMcpThreadRun),
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
   nextPosition: Schema.NullOr(NonNegativeInt),
   hasMore: Schema.Boolean,
+  approvalAttention: Schema.optional(OrchestratorMcpApprovalAttention),
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
@@ -523,6 +534,9 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
   threadId: ThreadId,
   runId: Schema.optional(RunId),
   timeoutMs: Schema.optional(Schema.Finite),
+  afterApprovalAttentionSequence: Schema.optional(NonNegativeInt),
+  afterApprovalPendingCount: Schema.optional(NonNegativeInt),
+  afterApprovalAvailable: Schema.optional(Schema.Boolean),
   untilDelegatedWorkSettled: Schema.optional(
     Schema.Boolean.annotate({
       description:
@@ -537,6 +551,7 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   runId: Schema.NullOr(RunId),
   status: OrchestratorMcpThreadStatus,
   timedOut: Schema.Boolean,
+  approvalAttention: Schema.optional(OrchestratorMcpApprovalAttention),
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
   /** With untilDelegatedWorkSettled, once settled: the run whose reply is the thread's result. */
   resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),

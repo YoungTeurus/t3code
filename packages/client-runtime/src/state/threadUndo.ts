@@ -1,3 +1,5 @@
+import type { ThreadSnoozeDependency } from "@t3tools/contracts";
+
 // Shared across hook instances so sidebar, header and menu actions invalidate each other.
 const currentActions = new Map<string, symbol>();
 const listeners = new Set<() => void>();
@@ -39,7 +41,8 @@ export type ThreadUndoStep =
   | { readonly action: "unsettle" }
   | { readonly action: "unsnooze" }
   | { readonly action: "pin"; readonly orderKey?: string }
-  | { readonly action: "snooze"; readonly snoozedUntil: string };
+  | { readonly action: "snooze"; readonly snoozedUntil: string }
+  | { readonly action: "restore-dependency"; readonly dependency: ThreadSnoozeDependency };
 
 export type ThreadUndoPlan = readonly [ThreadUndoStep, ...ThreadUndoStep[]];
 
@@ -49,8 +52,12 @@ export function planThreadUndo(
     readonly pinnedAt?: string | null;
     readonly pinOrderKey?: string | null;
     readonly snoozedUntil?: string | null;
+    readonly snoozeDependency?: ThreadSnoozeDependency | null | undefined;
   } | null,
 ): ThreadUndoPlan {
+  if ((action === "snooze" || action === "settle") && thread?.snoozeDependency != null) {
+    return [{ action: "restore-dependency", dependency: thread.snoozeDependency }];
+  }
   if (action === "snooze") return [{ action: "unsnooze" }];
   const pin: ThreadUndoStep = {
     action: "pin",

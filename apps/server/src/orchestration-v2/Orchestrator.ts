@@ -3,6 +3,7 @@ import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
+  OrchestratorMcpApprovalAttention,
 } from "@t3tools/contracts";
 import {
   latestExecutedRun,
@@ -27,6 +28,7 @@ import {
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
+  pendingGuestMessageCount,
   type NodeId,
   type ModelSelection,
   OrchestrationV2Command,
@@ -115,6 +117,7 @@ import {
   isUndeliveredMailboxSteer,
 } from "./NotificationMailbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import type * as EventSink from "./EventSink.ts";
 import {
   decideGuestMessageSend,
   guestShareAfterCancelledSend,
@@ -416,6 +419,28 @@ export interface OrchestratorV2Shape {
   readonly getThreadEventSequence: (
     threadId: ThreadId,
   ) => Effect.Effect<number, OrchestratorV2Error>;
+  readonly approvalAttention: (
+    threadId: ThreadId,
+  ) => Effect.Effect<OrchestratorMcpApprovalAttention, OrchestratorV2Error>;
+  readonly remoteApprovalObservation: (
+    threadId: ThreadId,
+    taskId: NodeId,
+  ) => Effect.Effect<
+    {
+      readonly snapshotSequence: number;
+      readonly lastAttentionSequence: number;
+      readonly pendingApprovalCount: number;
+    } | null,
+    OrchestratorV2Error
+  >;
+  readonly remoteApprovalTasks: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<EventSink.RemoteApprovalCheck>, OrchestratorV2Error>;
+  readonly registerRemoteApprovalPreflight: (
+    preflight: (
+      threadId: ThreadId,
+    ) => Effect.Effect<ReadonlyArray<EventSink.RemoteApprovalCheck>, string>,
+  ) => Effect.Effect<void>;
   readonly streamStoredEvents: Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamStoredEventsFrom: (input?: {
     readonly threadId?: ThreadId;
@@ -493,6 +518,11 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.auto-settle":
     case "thread.unsettle":
     case "thread.snooze":
+    case "thread.snooze-until-thread":
+    case "thread.snooze-dependency.undo":
+    case "thread.snooze-dependency.resolve":
+    case "thread.snooze-dependency.show":
+    case "thread.remote-approval.observe":
     case "thread.unsnooze":
     case "thread.auto-settle.set":
     case "thread.pin":
@@ -1010,6 +1040,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  let remoteApprovalPreflight:
+    | ((threadId: ThreadId) => Effect.Effect<ReadonlyArray<EventSink.RemoteApprovalCheck>, string>)
+    | undefined;
 
   /** The driver when this provider runs `/goal` natively, else undefined. */
   const goalDriverFor = Effect.fn("Orchestrator.goalDriverFor")(function* (
@@ -2826,6 +2859,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.settle"
           | "thread.unsettle"
           | "thread.snooze"
+          | "thread.snooze-until-thread"
+          | "thread.snooze-dependency.undo"
+          | "thread.snooze-dependency.resolve"
+          | "thread.snooze-dependency.show"
+          | "thread.remote-approval.observe"
           | "thread.unsnooze"
           | "thread.auto-settle.set"
           | "thread.pin"
@@ -2973,6 +3011,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (command.type === "thread.settle" ||
         command.type === "thread.unsettle" ||
         command.type === "thread.snooze" ||
+        command.type === "thread.snooze-until-thread" ||
+        command.type === "thread.snooze-dependency.undo" ||
         command.type === "thread.unsnooze" ||
         command.type === "thread.auto-settle.set" ||
         command.type === "thread.pin" ||
@@ -3187,20 +3227,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     let snoozedUntil: DateTime.Utc | null = null;
-    if (command.type === "thread.snooze") {
+    if (
+      command.type === "thread.snooze" ||
+      command.type === "thread.snooze-until-thread" ||
+      (command.type === "thread.snooze-dependency.undo" &&
+        command.dependency.visibility === "hidden")
+    ) {
       const projection = yield* loadProjectionForCommand(command, ["runs", "runtimeRequests"], {
         turnItemTypes: [],
       });
-      const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
-      if (
-        Option.isNone(parsedSnoozedUntil) ||
-        DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
-      ) {
+      if (pendingGuestMessageCount(projection.thread.guestShare) > 0) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
+          cause: "This thread has a pending guest request.",
         });
+      }
+      if (command.type === "thread.snooze") {
+        const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
+        if (
+          Option.isNone(parsedSnoozedUntil) ||
+          DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
+          });
+        }
+        snoozedUntil = parsedSnoozedUntil.value;
       }
       if (projection.runtimeRequests.some((request) => request.status === "pending")) {
         return yield* new OrchestratorDispatchError({
@@ -3231,7 +3286,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} has a queued run and cannot be snoozed.`,
         });
       }
-      snoozedUntil = parsedSnoozedUntil.value;
     }
     let markUnreadVisitedAt: DateTime.Utc | null = null;
     if (command.type === "thread.mark-unread") {
@@ -3252,11 +3306,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
     }
+    if (
+      command.type === "thread.snooze-until-thread" &&
+      command.expectedDependencyId !== undefined &&
+      (thread.snoozeDependency?.dependencyId !== command.expectedDependencyId ||
+        thread.snoozeDependency.targetThreadId !== command.targetThreadId ||
+        thread.snoozeDependency.until !== command.until)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The previous snooze dependency has changed.",
+      });
+    }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
           return {
             ...thread,
+            snoozeDependency: null,
             archivedAt: now,
             titleRegeneration: null,
             guestShare: null,
@@ -3280,6 +3348,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             activeOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
+            snoozeDependency: null,
             updatedAt:
               alreadySettled && thread.snoozedUntil == null && thread.snoozedAt == null
                 ? thread.updatedAt
@@ -3301,16 +3370,76 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             snoozedUntil,
+            snoozeDependency: null,
+            snoozeDependencyWake: null,
             limitRecovery: thread.limitRecovery ? { ...thread.limitRecovery, snooze: false } : null,
             snoozedAt: now,
             updatedAt: now,
           };
         }
-        case "thread.unsnooze": {
-          const alreadyAwake = thread.snoozedUntil == null;
+        case "thread.snooze-until-thread":
           return {
             ...thread,
             snoozedUntil: null,
+            snoozedAt: now,
+            snoozeDependencyWake: null,
+            snoozeDependency: {
+              targetThreadId: command.targetThreadId,
+              until: command.until,
+              visibility: "hidden" as const,
+              dependencyId:
+                thread.snoozeDependency?.targetThreadId === command.targetThreadId &&
+                thread.snoozeDependency.until === command.until
+                  ? thread.snoozeDependency.dependencyId
+                  : command.commandId,
+            },
+            updatedAt: now,
+          };
+        case "thread.snooze-dependency.undo":
+          return {
+            ...thread,
+            settledOverride: "active" as const,
+            settledAt: null,
+            snoozedUntil: null,
+            snoozedAt: now,
+            snoozeDependency: command.dependency,
+            snoozeDependencyWake: null,
+            updatedAt: now,
+          };
+        case "thread.snooze-dependency.resolve":
+          if (thread.snoozeDependency?.dependencyId !== command.dependencyId) return thread;
+          return {
+            ...thread,
+            snoozeDependency: null,
+            snoozeDependencyWake: {
+              targetThreadId: command.targetThreadId,
+              reason: command.reason,
+              eventId: command.commandId,
+              occurredAt: DateTime.formatIso(now),
+            },
+            snoozedUntil: null,
+            snoozedAt: null,
+            lastSnoozeWakeAt: now,
+            settledOverride: "active" as const,
+            settledAt: null,
+            updatedAt: now,
+          };
+        case "thread.snooze-dependency.show":
+          if (thread.snoozeDependency?.dependencyId !== command.dependencyId) return thread;
+          return {
+            ...thread,
+            snoozeDependency: { ...thread.snoozeDependency, visibility: "visible" as const },
+            lastSnoozeWakeAt: now,
+            updatedAt: now,
+          };
+        case "thread.remote-approval.observe":
+          return { ...thread };
+        case "thread.unsnooze": {
+          const alreadyAwake = thread.snoozedUntil == null && thread.snoozeDependency == null;
+          return {
+            ...thread,
+            snoozedUntil: null,
+            snoozeDependency: null,
             snoozedAt: null,
             lastSnoozeWakeAt: alreadyAwake ? thread.lastSnoozeWakeAt : now,
             updatedAt: alreadyAwake ? thread.updatedAt : now,
@@ -3326,7 +3455,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         case "thread.pin": {
           const alreadyPinned = thread.pinnedAt != null;
-          const promotes = thread.settledOverride === "settled" || thread.snoozedUntil != null;
+          const promotes =
+            thread.settledOverride === "settled" ||
+            thread.snoozedUntil != null ||
+            thread.snoozeDependency != null;
           return {
             ...thread,
             pinnedAt: alreadyPinned ? thread.pinnedAt : now,
@@ -3337,6 +3469,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               thread.settledOverride === "settled" ? "active" : thread.settledOverride,
             settledAt: thread.settledOverride === "settled" ? null : thread.settledAt,
             snoozedUntil: null,
+            snoozeDependency: null,
             snoozedAt: null,
             lastSnoozeWakeAt: thread.snoozedUntil == null ? thread.lastSnoozeWakeAt : now,
             updatedAt: alreadyPinned && !promotes ? thread.updatedAt : now,
@@ -3724,7 +3857,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         case "thread.unsettle":
           return "thread.unsettled" as const;
         case "thread.snooze":
+        case "thread.snooze-until-thread":
+        case "thread.snooze-dependency.undo":
           return "thread.snoozed" as const;
+        case "thread.snooze-dependency.resolve":
+          return "thread.unsnoozed" as const;
+        case "thread.snooze-dependency.show":
+        case "thread.remote-approval.observe":
+          return "thread.metadata-updated" as const;
         case "thread.unsnooze":
           return "thread.unsnoozed" as const;
         case "thread.auto-settle.set":
@@ -5058,6 +5198,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    responseToRequest = false,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     if (command.manualContinuationOfRunId !== undefined) {
@@ -5097,6 +5238,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.settledOverride === "settled" ||
+        projection.thread.snoozeDependency != null ||
         projection.thread.providerInstanceId !== run.providerInstanceId ||
         projection.runtimeRequests.some((request) => request.status === "pending") ||
         (projection.thread.snoozedUntil != null &&
@@ -5131,6 +5273,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         !isRestartContinuationSource(source, projection.providerTurns) ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
+        projection.thread.snoozeDependency != null ||
         projection.thread.providerInstanceId !== source.providerInstanceId ||
         projection.runs.some(
           (run) =>
@@ -5208,13 +5351,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Background wakes and delegated completions continue work the user already snoozed, so
     // only a message someone actually sent ends the snooze.
     const automaticWake =
-      command.notification !== undefined || command.delegatedCompletion !== undefined;
-    if (projection.thread.snoozedUntil != null && !automaticWake) {
+      command.createdBy !== "user" ||
+      command.notification !== undefined ||
+      command.delegatedCompletion !== undefined ||
+      command.usageLimitContinuationOfRunId !== undefined ||
+      command.restartContinuationOfRunId !== undefined;
+    if (
+      (projection.thread.snoozedUntil != null || projection.thread.snoozeDependency != null) &&
+      !automaticWake
+    ) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
         snoozedUntil: null,
-        snoozedAt: null,
+        snoozedAt: responseToRequest ? projection.thread.snoozedAt : null,
+        snoozeDependency:
+          responseToRequest && projection.thread.snoozeDependency != null
+            ? { ...projection.thread.snoozeDependency, visibility: "visible" }
+            : null,
         updatedAt: now,
       };
       yield* emit(
@@ -8561,6 +8715,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Provider session ${providerSessionId} was not found.`,
         });
       }
+      const pendingProjection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      if (pendingProjection.thread.snoozeDependency?.visibility === "hidden") {
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          providerInstanceId: pendingProjection.thread.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...pendingProjection.thread,
+            snoozeDependency: {
+              ...pendingProjection.thread.snoozeDependency,
+              visibility: "visible",
+            },
+            updatedAt: now,
+          },
+        });
+      }
       let answers = command.answers;
       if (runtimeRequest.kind === "user_input" && answers !== undefined) {
         const decoded = yield* decodeUserInputAnswers(answers).pipe(mapDispatchError(command));
@@ -8833,7 +9008,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           creationSource: "server" as const,
           dispatchMode,
         };
-        yield* dispatchMessage(answer, events, effects);
+        yield* dispatchMessage(answer, events, effects, true);
         return yield* recordSubagentFollowup(answer, events).pipe(mapDispatchError(answer));
       }
       if (providerSessionId === null) return;
@@ -12493,6 +12668,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
         if (
           thread.settledOverride !== null ||
+          thread.snoozeDependency != null ||
           DateTime.toEpochMillis(thread.updatedAt) > DateTime.toEpochMillis(command.snapshotAt)
         ) {
           return yield* new OrchestratorDispatchError({
@@ -12545,6 +12721,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.settle":
       case "thread.unsettle":
       case "thread.snooze":
+      case "thread.snooze-until-thread":
+      case "thread.snooze-dependency.undo":
+      case "thread.snooze-dependency.resolve":
+      case "thread.snooze-dependency.show":
+      case "thread.remote-approval.observe":
       case "thread.unsnooze":
       case "thread.auto-settle.set":
       case "thread.pin":
@@ -12825,6 +13006,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
+    remoteApprovalChecks?: ReadonlyArray<EventSink.RemoteApprovalCheck>,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
@@ -12900,6 +13082,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
+    const requiresSnoozeSequence =
+      command.type === "thread.snooze-until-thread" ||
+      command.type === "thread.snooze-dependency.undo" ||
+      command.type === "thread.snooze-dependency.show" ||
+      command.type === "thread.snooze-dependency.resolve" ||
+      command.type === "thread.remote-approval.observe" ||
+      (command.type === "thread.unsnooze" && command.expectedDependencyId !== undefined);
+    const expectedThreadSequence = requiresSnoozeSequence
+      ? yield* eventSink
+          .latestSequence({ threadId: commandThreadId(command) })
+          .pipe(mapDispatchError(command))
+      : undefined;
     const plan = yield* dispatchOnce(command).pipe(
       Effect.filterOrFail(
         (planned) =>
@@ -12991,6 +13185,50 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         threadId: commandThreadId(command),
         commandType: command.type,
+        ...(remoteApprovalChecks === undefined ? {} : { remoteApprovalChecks }),
+        ...(expectedThreadSequence === undefined ? {} : { expectedThreadSequence }),
+        ...(command.type === "thread.snooze-until-thread"
+          ? {
+              snoozeDependency: {
+                targetThreadId: command.targetThreadId,
+                until: command.until,
+                preserveDependencyId: plan.events
+                  .flatMap((event) =>
+                    event.type === "thread.snoozed"
+                      ? [event.payload.snoozeDependency?.dependencyId]
+                      : [],
+                  )
+                  .at(-1),
+              },
+            }
+          : {}),
+        ...(command.type === "thread.snooze-dependency.resolve"
+          ? { resolveSnoozeDependencyId: command.dependencyId }
+          : {}),
+        ...(command.type === "thread.snooze-dependency.undo"
+          ? {
+              undoSnoozeDependency: command.dependency,
+              undoExpectedCommandId: command.expectedCommandId,
+            }
+          : {}),
+        ...(command.type === "thread.snooze-dependency.show"
+          ? {
+              showSnoozeDependencyId: command.dependencyId,
+              attentionSequence: command.attentionSequence,
+            }
+          : {}),
+        ...(command.type === "thread.remote-approval.observe"
+          ? { remoteApprovalObservation: command }
+          : {}),
+        ...(command.type === "thread.unsnooze" && command.expectedDependencyId !== undefined
+          ? { expectedSnoozeDependencyId: command.expectedDependencyId }
+          : {}),
+        ...(command.type === "message.dispatch" &&
+        plan.events.some(
+          (event) => event.type === "thread.unsnoozed" && event.payload.snoozeDependency == null,
+        )
+          ? { cancelSnoozeDependency: true }
+          : {}),
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
@@ -13046,9 +13284,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+    const needsApprovalCheck =
+      command.type === "thread.snooze" ||
+      command.type === "thread.snooze-until-thread" ||
+      (command.type === "thread.snooze-dependency.undo" &&
+        command.dependency.visibility === "hidden");
+    let remoteApprovalChecks: ReadonlyArray<EventSink.RemoteApprovalCheck> | undefined;
+    const existingReceipt = needsApprovalCheck
+      ? yield* commandReceipts.getByCommandId(command.commandId).pipe(mapDispatchError(command))
+      : Option.none();
+    if (needsApprovalCheck && Option.isNone(existingReceipt)) {
+      const threadId = commandThreadId(command);
+      remoteApprovalChecks =
+        remoteApprovalPreflight === undefined
+          ? yield* eventSink.remoteApprovalTasks(threadId).pipe(mapDispatchError(command))
+          : yield* remoteApprovalPreflight(threadId).pipe(mapDispatchError(command));
+      if (
+        remoteApprovalChecks.some((check) => check.pendingApprovalCount !== 0) ||
+        (remoteApprovalPreflight === undefined && remoteApprovalChecks.length > 0)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "A remote task needs approval or its approval status is unavailable.",
+        });
+      }
+    }
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
-      dispatchWithReceiptEffect(command),
+      dispatchWithReceiptEffect(command, remoteApprovalChecks),
     );
     // Answering a message-mode question can also start a follow-up.
     if (
@@ -13474,6 +13738,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .latestSequence({ threadId })
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
     }),
+    approvalAttention: Effect.fn("OrchestratorV2.approvalAttention")(function (threadId) {
+      return eventSink
+        .approvalAttention(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    }),
+    remoteApprovalObservation: Effect.fn("OrchestratorV2.remoteApprovalObservation")(
+      function (threadId, taskId) {
+        return eventSink
+          .remoteApprovalObservation(threadId, taskId)
+          .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      },
+    ),
+    remoteApprovalTasks: Effect.fn("OrchestratorV2.remoteApprovalTasks")((threadId) =>
+      eventSink
+        .remoteApprovalTasks(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
+    ),
+    registerRemoteApprovalPreflight: Effect.fn("OrchestratorV2.registerRemoteApprovalPreflight")(
+      (preflight) =>
+        Effect.sync(() => {
+          remoteApprovalPreflight = preflight;
+        }),
+    ),
     streamStoredEvents: eventSink.stream().pipe(
       Stream.mapError(
         (cause) =>

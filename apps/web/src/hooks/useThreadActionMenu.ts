@@ -16,6 +16,7 @@ import {
 import { useRouter } from "@tanstack/react-router";
 
 import { pickSnoozePreset, resolveSnoozePresets } from "../components/Sidebar.snooze";
+import { requestSnoozeUntilThread } from "../components/SnoozeUntilThreadDialog";
 import {
   buildThreadActionMenuItems,
   threadActionRequiresOperate,
@@ -29,6 +30,7 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
 import {
   readEnvironmentServerConfigLoaded,
+  readEnvironmentSupportsSnoozeDependency,
   readEnvironmentSupportsAutoSettleOptOut,
   readThreadShell,
   useProjects,
@@ -78,6 +80,7 @@ export function useThreadActionMenu(input: {
     settleThread,
     unsettleThread,
     snoozeThread,
+    snoozeUntilThread,
     unsnoozeThread,
     pinThread,
     confirmAndUnpinThread,
@@ -127,6 +130,7 @@ export function useThreadActionMenu(input: {
         settlement: configLoaded,
         autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
         snooze: configLoaded,
+        snoozeDependency: readEnvironmentSupportsSnoozeDependency(threadRef.environmentId),
         pinning: configLoaded,
         titleRegeneration: configLoaded,
       };
@@ -160,6 +164,20 @@ export function useThreadActionMenu(input: {
           "Thread action unavailable",
           new Error("This connection cannot change threads."),
         );
+        return;
+      }
+      if (action === "snooze:thread") {
+        const choice = await requestSnoozeUntilThread(
+          threadRef.environmentId,
+          threadRef.threadId,
+          thread.snoozeDependency ?? null,
+        );
+        if (choice) {
+          const result = await snoozeUntilThread(threadRef, choice);
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            failureToast("Failed to snooze thread", squashAtomCommandFailure(result));
+          }
+        }
         return;
       }
       if (action.startsWith("snooze:")) {

@@ -1273,11 +1273,27 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     )}
                   >
                     {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
-                      <span className="inline-flex items-center gap-1 text-xs text-info-foreground tabular-nums">
-                        {/* The clock tells a wake time from an age at a glance. */}
-                        <AlarmClockIcon aria-hidden className="size-3" />
-                        {props.snoozeWakeLabelText}
-                      </span>
+                      thread.snoozeDependency != null ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-xs text-info-foreground hover:underline"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onThreadActivate({
+                              environmentId: thread.environmentId,
+                              threadId: thread.snoozeDependency!.targetThreadId,
+                            });
+                          }}
+                        >
+                          <AlarmClockIcon aria-hidden className="size-3" />
+                          {props.snoozeWakeLabelText}
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs text-info-foreground tabular-nums">
+                          <AlarmClockIcon aria-hidden className="size-3" />
+                          {props.snoozeWakeLabelText}
+                        </span>
+                      )
                     ) : (inFolder ? isWokeStatus : isWoke) ? (
                       <Tooltip>
                         <TooltipTrigger

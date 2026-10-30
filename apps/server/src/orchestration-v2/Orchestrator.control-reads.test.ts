@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as Result from "effect/Result";
@@ -37,6 +38,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadSnoozeDependencyReactor from "./ThreadSnoozeDependencyReactor.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1411,6 +1413,976 @@ it.effect("replays a thread.create receipt without changing the thread", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("snoozes a thread until another thread settles", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const waitingThread = ThreadId.make("thread:dependency-waiter");
+    const targetThread = ThreadId.make("thread:dependency-target");
+    for (const threadId of [waitingThread, targetThread]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make(
+          threadId === waitingThread ? "project:dependency-a" : "project:dependency-b",
+        ),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const outcome = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make("snooze:dependency"),
+        threadId: waitingThread,
+        targetThreadId: targetThread,
+        until: "settled",
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isSuccess(outcome), "event-based snooze must be accepted");
+    assert.deepInclude((yield* projections.getThread(waitingThread)).snoozeDependency, {
+      targetThreadId: targetThread,
+      until: "settled",
+      visibility: "hidden",
+    });
+    assert.deepInclude((yield* projections.getThreadShell(waitingThread))?.snoozeDependency, {
+      targetThreadId: targetThread,
+      until: "settled",
+      visibility: "hidden",
+    });
+    const reverse = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make("snooze:reverse-dependency"),
+        threadId: targetThread,
+        targetThreadId: waitingThread,
+        until: "settled",
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(reverse), "direct cycles must be rejected");
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:dependency-target"),
+      threadId: targetThread,
+    });
+    yield* (yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor).drain();
+    assert.isNull((yield* projections.getThread(waitingThread)).snoozeDependency);
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("waits for a successful run after a failed run", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:run-waiter");
+    const target = ThreadId.make("thread:run-target");
+    for (const threadId of [waiting, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:run-dependency"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:run"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "completed",
+    });
+    for (const [index, status] of (["failed", "completed"] as const).entries()) {
+      const messageId = MessageId.make(`run-message:${index}`);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`dispatch:${index}`),
+        threadId: target,
+        messageId,
+        text: "Run",
+        attachments: [],
+        dispatchMode: { type: "defer_start" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const run = (yield* projections.getThreadProjection(target)).runs.find(
+        (item) => item.userMessageId === messageId,
+      )!;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`run-ended:${index}`),
+            type: "run.updated",
+            threadId: target,
+            runId: run.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...run, status, completedAt: now },
+          },
+        ],
+      });
+      yield* reactor.drain();
+      if (status === "failed")
+        assert.isNotNull((yield* projections.getThread(waiting)).snoozeDependency);
+      else assert.isNull((yield* projections.getThread(waiting)).snoozeDependency);
+    }
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("keeps a dependency visible after a request is answered and resumes waiting", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:attention-waiter");
+    const target = ThreadId.make("thread:attention-target");
+    for (const threadId of [waiting, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:attention"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:attention"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("stale:automatic-resume"),
+      threadId: waiting,
+      messageId: MessageId.make("stale:automatic-resume"),
+      text: "Continue",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "server",
+      usageLimitContinuationOfRunId: RunId.make("obsolete:limited-run"),
+      usageLimitRecoveryRequestId: CommandId.make("obsolete:recovery"),
+    });
+    assert.equal(
+      (yield* projections.getThread(waiting)).snoozeDependency?.dependencyId,
+      "wait:attention",
+    );
+    const now = yield* DateTime.now;
+    const request = {
+      id: RuntimeRequestId.make("attention-request"),
+      nodeId: NodeId.make("attention-node"),
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "user_input" as const,
+      status: "pending" as const,
+      responseCapability: { type: "not_resumable" as const, reason: "test" },
+      createdAt: now,
+      resolvedAt: null,
+    };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("attention-pending"),
+          type: "runtime-request.updated",
+          threadId: waiting,
+          occurredAt: now,
+          payload: request,
+        },
+      ],
+    });
+    yield* reactor.drain();
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "visible");
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("attention-resolved"),
+          type: "runtime-request.updated",
+          threadId: waiting,
+          occurredAt: now,
+          payload: { ...request, status: "resolved", resolvedAt: now },
+        },
+      ],
+    });
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "visible");
+    const visibleDependency = (yield* projections.getThread(waiting)).snoozeDependency!;
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("rehide:attention"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "hidden");
+    assert.equal(
+      (yield* projections.getThread(waiting)).snoozeDependency?.dependencyId,
+      "wait:attention",
+    );
+    const staleAttention = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-dependency.show",
+        commandId: CommandId.make("stale:attention"),
+        threadId: waiting,
+        dependencyId: "wait:attention",
+        attentionSequence: 1,
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(staleAttention));
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "hidden");
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-dependency.undo",
+      commandId: CommandId.make("undo:rehide"),
+      threadId: waiting,
+      dependency: visibleDependency,
+      expectedCommandId: CommandId.make("rehide:attention"),
+    });
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "visible");
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("rehide:attention-again"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:attention-target"),
+      threadId: target,
+    });
+    yield* reactor.drain();
+    assert.isNull((yield* projections.getThread(waiting)).snoozeDependency);
+    yield* orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("unsettle:attention-target"),
+      threadId: target,
+      reason: "user",
+    });
+    const staleRehide = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make("stale:rehide"),
+        threadId: waiting,
+        targetThreadId: target,
+        until: "settled",
+        expectedDependencyId: visibleDependency.dependencyId,
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(staleRehide));
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependencyWake?.reason, "settled");
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect.each(["archive", "delete"] as const)(
+  "wakes dependants when the target is %sd",
+  (action) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+      const waiting = ThreadId.make(`thread:${action}-waiter`);
+      const target = ThreadId.make(`thread:${action}-target`);
+      for (const threadId of [waiting, target]) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId: ProjectId.make("project:removed-target"),
+          title: threadId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make(`wait:${action}`),
+        threadId: waiting,
+        targetThreadId: target,
+        until: "completed",
+      });
+      yield* orchestrator.dispatch({
+        type: action === "archive" ? "thread.archive" : "thread.delete",
+        commandId: CommandId.make(`${action}:target`),
+        threadId: target,
+      });
+      yield* reactor.drain();
+      const result = yield* projections.getThread(waiting);
+      assert.isNull(result.snoozeDependency);
+      assert.equal(
+        result.snoozeDependencyWake?.reason,
+        action === "archive" ? "archived" : "deleted",
+      );
+      yield* reactor.drain();
+      assert.deepEqual(yield* projections.getThread(waiting), result);
+    }).pipe(
+      Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest))),
+    ),
+);
+
+it.effect("rejects one of two concurrent reverse dependencies", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const left = ThreadId.make("thread:cycle-left");
+    const right = ThreadId.make("thread:cycle-right");
+    for (const threadId of [left, right]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:cycle"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const results = yield* Effect.all(
+      [
+        orchestrator
+          .dispatch({
+            type: "thread.snooze-until-thread",
+            commandId: CommandId.make("cycle:left"),
+            threadId: left,
+            targetThreadId: right,
+            until: "settled",
+          })
+          .pipe(Effect.result),
+        orchestrator
+          .dispatch({
+            type: "thread.snooze-until-thread",
+            commandId: CommandId.make("cycle:right"),
+            threadId: right,
+            targetThreadId: left,
+            until: "settled",
+          })
+          .pipe(Effect.result),
+      ],
+      { concurrency: "unbounded" },
+    );
+    assert.equal(results.filter(Result.isSuccess).length, 1);
+    assert.equal(results.filter(Result.isFailure).length, 1);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("does not let an old target event clear a replacement dependency", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:replacement-waiter");
+    const first = ThreadId.make("thread:replacement-first");
+    const second = ThreadId.make("thread:replacement-second");
+    for (const threadId of [waiting, first, second]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:replacement"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    const now = yield* DateTime.now;
+    const staleCommit = yield* sink
+      .commitCommand({
+        commandId: CommandId.make("stale:thread-payload"),
+        threadId: waiting,
+        commandType: "thread.snooze-until-thread",
+        expectedThreadSequence: 0,
+        acceptedAt: now,
+        events: [
+          {
+            id: EventId.make("stale:thread-event"),
+            type: "thread.metadata-updated",
+            threadId: waiting,
+            occurredAt: now,
+            payload: yield* projections.getThread(waiting),
+          },
+        ],
+        effects: [],
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(staleCommit));
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:first"),
+      threadId: waiting,
+      targetThreadId: first,
+      until: "settled",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:first"),
+      threadId: first,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.unsnooze",
+      commandId: CommandId.make("wake:first"),
+      threadId: waiting,
+      reason: "user",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:second"),
+      threadId: waiting,
+      targetThreadId: second,
+      until: "settled",
+    });
+    const staleUndo = yield* orchestrator
+      .dispatch({
+        type: "thread.unsnooze",
+        commandId: CommandId.make("undo:old-wait"),
+        threadId: waiting,
+        reason: "user",
+        expectedDependencyId: "wait:first",
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(staleUndo));
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("compact:waiting"),
+      threadId: waiting,
+      messageId: MessageId.make("compact:waiting-message"),
+      text: "/compact",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "agent",
+      creationSource: "server",
+    });
+    yield* reactor.drain();
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.targetThreadId, second);
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:second"),
+      threadId: second,
+    });
+    yield* reactor.drain();
+    const woke = yield* projections.getThread(waiting);
+    assert.isNull(woke.snoozeDependency);
+    assert.equal(woke.snoozeDependencyWake?.targetThreadId, second);
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("the running reactor wakes a thread after its target settles", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:live-reactor-waiter");
+    const target = ThreadId.make("thread:live-reactor-target");
+    for (const threadId of [waiting, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:live-reactor"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:live"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    const afterSequence = yield* sink.latestSequence();
+    const observed = yield* sink
+      .stream({ afterSequence, threadId: waiting, eventType: "thread.unsnoozed" })
+      .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped);
+    yield* reactor.start();
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:live"),
+      threadId: target,
+    });
+    const events = yield* Fiber.join(observed);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.event.type, "thread.unsnoozed");
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("the live reactor processes attention signalled by a metadata event", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:live-attention-waiter");
+    const target = ThreadId.make("thread:live-attention-target");
+    for (const threadId of [waiting, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:live-attention"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:live-attention"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    const afterSequence = yield* sink.latestSequence();
+    const observed = yield* sink
+      .stream({ afterSequence, threadId: waiting, eventType: "thread.metadata-updated" })
+      .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped);
+    yield* reactor.start();
+    const now = yield* DateTime.now;
+    yield* sql`INSERT INTO thread_snooze_transitions (target_thread_id, event_id, kind, occurred_at)
+      VALUES (${waiting}, 'remote:live-attention', 'attention', ${DateTime.formatIso(now)})`;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("remote:metadata-signal"),
+          type: "thread.metadata-updated",
+          threadId: target,
+          occurredAt: now,
+          payload: yield* projections.getThread(target),
+        },
+      ],
+    });
+    const events = yield* Fiber.join(observed);
+    assert.equal(events.length, 1);
+    assert.equal((yield* projections.getThread(waiting)).snoozeDependency?.visibility, "visible");
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("rejects snooze if the remote task set changes during preflight", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread:remote-preflight-race");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:remote-preflight-race"),
+      threadId,
+      projectId: ProjectId.make("project:remote-preflight-race"),
+      title: "Race",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.registerRemoteApprovalPreflight((id) =>
+      Effect.gen(function* () {
+        const snapshot = yield* orchestrator.remoteApprovalTasks(id);
+        yield* sql`INSERT INTO orchestration_v2_projection_subagents
+        (subagent_id, thread_id, parent_node_id, provider, origin, status, updated_at, payload_json)
+        VALUES ('task:race', ${id}, 'node:race', 'codex', 'app_owned', 'running', '2026-01-01T00:00:00.000Z',
+          json_object('remoteChild', json_object('environmentId', 'environment:remote', 'threadId', 'thread:remote'), 'result', NULL))`;
+        return snapshot;
+      }).pipe(Effect.mapError(String)),
+    );
+    const result = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.make("snooze:remote-preflight-race"),
+        threadId,
+        snoozedUntil: "2099-01-01T00:00:00.000Z",
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(result));
+    assert.isNull((yield* orchestrator.getThreadShell(threadId))?.snoozedUntil);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("retains the approval opening sequence even without a local snooze", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread:remote-attention-marker");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:remote-attention-marker"),
+      threadId,
+      projectId: ProjectId.make("project:remote-attention-marker"),
+      title: "Approval marker",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const now = yield* DateTime.now;
+    const request = {
+      id: RuntimeRequestId.make("remote-attention-request"),
+      nodeId: NodeId.make("remote-attention-node"),
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "command" as const,
+      status: "pending" as const,
+      responseCapability: { type: "not_resumable" as const, reason: "test" },
+      createdAt: now,
+      resolvedAt: null,
+    };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("remote-attention-open"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: request,
+        },
+      ],
+    });
+    const first = (yield* sql<{
+      readonly last_attention_sequence: number;
+    }>`SELECT last_attention_sequence FROM thread_approval_attention WHERE thread_id = ${threadId}`)[0]
+      ?.last_attention_sequence;
+    assert.isAbove(first ?? 0, 0);
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("remote-attention-repeat"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: request,
+        },
+        {
+          id: EventId.make("remote-attention-resolve"),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...request, status: "resolved", resolvedAt: now },
+        },
+      ],
+    });
+    const after = (yield* sql<{
+      readonly last_attention_sequence: number;
+    }>`SELECT last_attention_sequence FROM thread_approval_attention WHERE thread_id = ${threadId}`)[0]
+      ?.last_attention_sequence;
+    assert.equal(after, first);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("preserves parent visibility after a live subagent needs approval", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const parent = ThreadId.make("thread:approval-parent");
+    const target = ThreadId.make("thread:approval-target");
+    for (const threadId of [parent, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:approval-parent"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start:approval-parent"),
+      threadId: parent,
+      messageId: MessageId.make("message:approval-parent"),
+      text: "Delegate",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parentRun = (yield* projections.getThreadProjection(parent)).runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate:approval-parent"),
+      parentThreadId: parent,
+      parentRunId: parentRun.id,
+      parentNodeId: parentRun.rootNodeId!,
+      task: "Work",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const child = (yield* projections.getThreadProjection(parent)).subagents[0]!.childThreadId!;
+    const childProjection = yield* projections.getThreadProjection(child);
+    const childRun = childProjection.runs[0]!;
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("child:running"),
+          type: "run.updated",
+          threadId: child,
+          runId: childRun.id,
+          providerInstanceId: childRun.providerInstanceId,
+          occurredAt: now,
+          payload: { ...childRun, status: "running" },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:approval-parent"),
+      threadId: parent,
+      targetThreadId: target,
+      until: "settled",
+    });
+    const request = {
+      id: RuntimeRequestId.make("child:approval"),
+      nodeId: NodeId.make("child:approval-node"),
+      providerTurnId: null,
+      nativeRequestRef: null,
+      kind: "command" as const,
+      status: "pending" as const,
+      responseCapability: { type: "not_resumable" as const, reason: "test" },
+      createdAt: now,
+      resolvedAt: null,
+    };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("child:approval-pending"),
+          type: "runtime-request.updated",
+          threadId: child,
+          occurredAt: now,
+          payload: request,
+        },
+      ],
+    });
+    yield* reactor.drain();
+    assert.equal((yield* projections.getThread(parent)).snoozeDependency?.visibility, "visible");
+    const blocked = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-until-thread",
+        commandId: CommandId.make("rehide:approval-parent"),
+        threadId: parent,
+        targetThreadId: target,
+        until: "settled",
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(blocked));
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("child:approval-resolved"),
+          type: "runtime-request.updated",
+          threadId: child,
+          occurredAt: now,
+          payload: { ...request, status: "resolved", resolvedAt: now },
+        },
+      ],
+    });
+    assert.equal((yield* projections.getThread(parent)).snoozeDependency?.visibility, "visible");
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("undoing settle restores the waiting dependency unless the target already settled", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const reactor = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+    const waiting = ThreadId.make("thread:undo-waiter");
+    const target = ThreadId.make("thread:undo-target");
+    for (const threadId of [waiting, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:undo-dependency"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:undo"),
+      threadId: waiting,
+      targetThreadId: target,
+      until: "settled",
+    });
+    const dependency = (yield* projections.getThread(waiting)).snoozeDependency!;
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:waiter"),
+      threadId: waiting,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-dependency.undo",
+      commandId: CommandId.make("undo:waiter"),
+      threadId: waiting,
+      dependency,
+      expectedCommandId: CommandId.make("settle:waiter"),
+    });
+    assert.equal(
+      (yield* projections.getThread(waiting)).snoozeDependency?.dependencyId,
+      dependency.dependencyId,
+    );
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:waiter-again"),
+      threadId: waiting,
+    });
+    const staleUndo = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-dependency.undo",
+        commandId: CommandId.make("undo:stale-settle"),
+        threadId: waiting,
+        dependency,
+        expectedCommandId: CommandId.make("settle:waiter"),
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(staleUndo));
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:target-while-cancelled"),
+      threadId: target,
+    });
+    yield* reactor.drain();
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-dependency.undo",
+      commandId: CommandId.make("undo:after-target"),
+      threadId: waiting,
+      dependency,
+      expectedCommandId: CommandId.make("settle:waiter-again"),
+    });
+    const result = yield* projections.getThread(waiting);
+    assert.isNull(result.snoozeDependency);
+    assert.equal(result.snoozeDependencyWake?.reason, "settled");
+  }).pipe(Effect.provide(ThreadSnoozeDependencyReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
+it.effect("undo refuses to restore a dependency if it would create a direct cycle", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const left = ThreadId.make("thread:undo-cycle-left");
+    const right = ThreadId.make("thread:undo-cycle-right");
+    for (const threadId of [left, right]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:undo-cycle"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:undo-cycle"),
+      threadId: left,
+      targetThreadId: right,
+      until: "settled",
+    });
+    const dependency = (yield* projections.getThread(left)).snoozeDependency!;
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:undo-cycle"),
+      threadId: left,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("reverse:undo-cycle"),
+      threadId: right,
+      targetThreadId: left,
+      until: "completed",
+    });
+    const undo = yield* orchestrator
+      .dispatch({
+        type: "thread.snooze-dependency.undo",
+        commandId: CommandId.make("undo:cycle"),
+        threadId: left,
+        dependency,
+        expectedCommandId: CommandId.make("settle:undo-cycle"),
+      })
+      .pipe(Effect.result);
+    assert.isTrue(Result.isFailure(undo));
+    assert.equal((yield* projections.getThread(left)).settledOverride, "settled");
+    assert.equal((yield* projections.getThread(right)).snoozeDependency?.targetThreadId, left);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("explicit settle clears snooze atomically and stays idempotent after re-snoozing", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -1485,6 +2457,88 @@ it.effect("explicit settle clears snooze atomically and stays idempotent after r
     } as const;
     assert.deepInclude(yield* projections.getThreadShell(threadId), active);
     assert.deepInclude((yield* projections.getThreadProjection(threadId)).thread, active);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("undo records an already-fired wait even if its target now waits for the source", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const source = ThreadId.make("thread:undo-fired-source");
+    const target = ThreadId.make("thread:undo-fired-target");
+    for (const threadId of [source, target]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${threadId}`),
+        threadId,
+        projectId: ProjectId.make("project:undo-fired"),
+        title: threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start:undo-fired"),
+      threadId: target,
+      messageId: MessageId.make("message:undo-fired"),
+      text: "Work",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const run = (yield* projections.getThreadProjection(target)).runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("wait:undo-fired"),
+      threadId: source,
+      targetThreadId: target,
+      until: "completed",
+    });
+    const dependency = (yield* projections.getThread(source)).snoozeDependency!;
+    yield* orchestrator.dispatch({
+      type: "thread.settle",
+      commandId: CommandId.make("settle:undo-fired"),
+      threadId: source,
+    });
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("completed:undo-fired"),
+          type: "run.updated",
+          threadId: target,
+          runId: run.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...run, status: "completed", completedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-until-thread",
+      commandId: CommandId.make("reverse:undo-fired"),
+      threadId: target,
+      targetThreadId: source,
+      until: "completed",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.snooze-dependency.undo",
+      commandId: CommandId.make("undo:already-fired"),
+      threadId: source,
+      dependency,
+      expectedCommandId: CommandId.make("settle:undo-fired"),
+    });
+    const restored = yield* projections.getThread(source);
+    assert.isNull(restored.snoozeDependency);
+    assert.equal(restored.snoozeDependencyWake?.reason, "completed");
   }).pipe(Effect.provide(layerTest)),
 );
 

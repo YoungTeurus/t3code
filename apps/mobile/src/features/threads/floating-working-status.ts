@@ -30,6 +30,7 @@ export type FloatingWorkingStatus =
       readonly state: "snoozed" | "settled" | "woke";
       readonly label: string;
       readonly action: FloatingStatusAction;
+      readonly onPress?: () => void;
     }
   | { readonly kind: "goal"; readonly label: string; readonly accessibilityLabel: string }
   | { readonly kind: "preparing"; readonly label: string }

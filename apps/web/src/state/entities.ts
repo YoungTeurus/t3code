@@ -314,6 +314,13 @@ export function readEnvironmentServerConfigLoaded(environmentId: EnvironmentId):
   return appAtomRegistry.get(environmentServerConfigsAtom).has(environmentId);
 }
 
+export function readEnvironmentSupportsSnoozeDependency(environmentId: EnvironmentId): boolean {
+  return (
+    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .threadSnoozeDependency === true
+  );
+}
+
 export function readEnvironmentSupportsAutoSettleOptOut(environmentId: EnvironmentId): boolean {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities

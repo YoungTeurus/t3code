@@ -189,6 +189,7 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
+import * as ThreadSnoozeDependencyReactor from "./orchestration-v2/ThreadSnoozeDependencyReactor.ts";
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -597,6 +598,15 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const service = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+      yield* service.start();
+    }),
+  ).pipe(
+    Layer.provide(ThreadSnoozeDependencyReactor.layer),
+    Layer.provide(RuntimeLayer.layerEventSink),
+  ),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
