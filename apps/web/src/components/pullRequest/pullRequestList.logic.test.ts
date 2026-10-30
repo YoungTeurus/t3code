@@ -8,6 +8,7 @@ import type {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  pullRequestListReadError,
   pullRequestHostActions,
   largestPullRequestReadCount,
   pullRequestQuickActions,
@@ -821,5 +822,19 @@ describe("filter picker choices", () => {
       { name: "size:XL", color: "d93f0b", count: 7 },
       { name: "bug", color: null, count: 0 },
     ]);
+  });
+});
+
+describe("pull request list failures", () => {
+  it("surfaces repository failures from successful list responses", () => {
+    const errors = [
+      { projectTitle: "Arcadia", message: "arcadia could not be read." },
+      { projectTitle: "Other", message: "other could not be read." },
+    ];
+    expect(pullRequestListReadError(null, errors)).toBe(
+      "Arcadia: arcadia could not be read. Other: other could not be read.",
+    );
+    expect(pullRequestListReadError("Server disconnected", errors)).toBe("Server disconnected");
+    expect(pullRequestListReadError(null, [])).toBeNull();
   });
 });

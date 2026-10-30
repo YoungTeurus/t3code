@@ -27,7 +27,6 @@ export const PullRequest = Schema.Struct({
   created_at: Schema.String,
   updated_at: Schema.String,
   closed_at: Schema.optional(Schema.NullOr(Schema.String)),
-  merge_commit: Schema.optional(Schema.NullOr(Schema.String)),
   merge_allowed: Schema.optional(Schema.NullOr(Schema.Boolean)),
   auto_merge: Schema.optional(Schema.String),
   author: User,
@@ -118,7 +117,7 @@ const decodeRepositorySelector = Schema.decodeUnknownOption(
 );
 const decodePullRequest = Schema.decodeUnknownEffect(PullRequest);
 const prFields =
-  "id,url,summary,description,status,created_at,updated_at,closed_at,merge_allowed,merge_commit,author(name,uid),coauthors(name,uid),tickets,assignees(name,uid),approvers(name,uid),vcs(repo_name,from_branch,to_branch,type),labels(name),auto_merge,active_diff(id,published,has_conflicts,commit_ids(head,base,merge))";
+  "id,url,summary,description,status,created_at,updated_at,closed_at,merge_allowed,author(name,uid),coauthors(name,uid),tickets,assignees(name,uid),approvers(name,uid),vcs(repo_name,from_branch,to_branch,type),labels(name),auto_merge,active_diff(id,published,has_conflicts,commit_ids(head,base,merge))";
 const diffFields = "id,published,commit_ids(head,base,merge),has_conflicts";
 const commentFields =
   "id,content,created_at,updated_at,edited_at,deleted_at,is_draft,issue_status,reply_to_id,forbidden,author(name,uid),anchor";

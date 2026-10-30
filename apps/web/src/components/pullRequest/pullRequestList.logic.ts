@@ -975,3 +975,15 @@ export function findProjectForRepository<
   const scoped = findScopedProject(candidates, input.scopedEnvironmentId, input.scopedProjectId);
   return scoped ?? candidates[0];
 }
+
+export function pullRequestListReadError(
+  queryError: string | null,
+  projectErrors: ReadonlyArray<Pick<PullRequestListProjectError, "projectTitle" | "message">>,
+): string | null {
+  return (
+    queryError ??
+    (projectErrors.length === 0
+      ? null
+      : projectErrors.map((error) => `${error.projectTitle}: ${error.message}`).join(" "))
+  );
+}

@@ -41,6 +41,7 @@ describe("Arcanum pull request reads", () => {
               Layer.mock(ArcanumApi.ArcanumApi)({
                 request: (input, schema) => {
                   assert.isTrue(input.path.includes("fields="));
+                  assert.isFalse(decodeURIComponent(input.path).includes("merge_commit"));
                   assert.isFalse(input.path.includes("active-diff"));
                   if (input.path.startsWith("/v1/plugin/pull-request/search")) {
                     assert.deepEqual(input.body, {
