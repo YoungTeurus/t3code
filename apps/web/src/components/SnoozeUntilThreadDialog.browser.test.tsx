@@ -66,13 +66,16 @@ describe("Snooze until another thread", () => {
     await expect
       .element(page.getByText("Settled target", { exact: false }))
       .not.toBeInTheDocument();
-    await userEvent.click(page.getByRole("checkbox", { name: "Include settled threads" }));
+    await userEvent.click(page.getByRole("switch", { name: "Include settled threads" }));
     await userEvent.click(page.getByRole("button", { name: /Settled target/ }));
+    await expect
+      .element(page.getByRole("button", { name: /Settled target/ }))
+      .toHaveAttribute("aria-pressed", "true");
     await expect
       .element(page.getByText("This thread is already settled. Choose another thread or event."))
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Snooze", exact: true })).toBeDisabled();
-    await userEvent.click(page.getByRole("radio", { name: "Successful run" }));
+    await userEvent.click(page.getByRole("button", { name: "Successful run" }));
     await userEvent.click(page.getByRole("button", { name: "Snooze", exact: true }));
     expect(await result).toEqual({ targetThreadId: settled, until: "completed" });
   });
