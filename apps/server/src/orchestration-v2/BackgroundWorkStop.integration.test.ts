@@ -42,6 +42,7 @@ const stopEarlierBackgroundWork = ({
   backgroundWorkAfterStop,
   stalledRun,
   workflowMember = false,
+  triggerWait = false,
 }: {
   readonly wakeAfterStop?: boolean;
   readonly failedStart?: boolean;
@@ -49,6 +50,7 @@ const stopEarlierBackgroundWork = ({
   readonly stopWithQueue?: "thread.stop" | "run.interrupt";
   readonly olderStart?: boolean;
   readonly workflowMember?: boolean;
+  readonly triggerWait?: boolean;
   readonly stalledRun?: "missing-session-terminal" | "returned-interrupt" | "superseded-attempt";
 }) =>
   Effect.scoped(
@@ -935,6 +937,28 @@ const stopEarlierBackgroundWork = ({
           });
         }
 
+        if (triggerWait) {
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("trigger-wait"),
+                type: "thread.metadata-updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...before.thread,
+                  triggerWait: {
+                    runId: before.runs.at(-1)!.id,
+                    reason: "IDM approval",
+                    startedAt: DateTime.formatIso(now),
+                  },
+                },
+              },
+            ],
+          });
+        }
+
         yield* orchestrator.dispatch(
           stopWithQueue === "thread.stop"
             ? {
@@ -1061,4 +1085,10 @@ it.effect.each(["missing-session-terminal", "returned-interrupt", "superseded-at
 
 it.effect("Stop holds a provider wake that queues before the stopped turn ends", () =>
   stopEarlierBackgroundWork({ wakeAfterStop: true }),
+);
+
+it.effect.each([false, true])(
+  "one Stop reaches background work with a trigger wait (failed start: %s)",
+  (failedStart) =>
+    stopEarlierBackgroundWork({ triggerWait: true, stopWithQueue: "thread.stop", failedStart }),
 );

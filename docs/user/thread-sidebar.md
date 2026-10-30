@@ -282,6 +282,17 @@ To choose what the thread details card shows, right-click the card or open
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings
 back the standard rows.
 
+## Waiting for an event
+
+An agent can leave unfinished work in **Working** with a **Waiting** status while it waits for
+an external event. An enabled schedule or webhook must be attached to that chat. The chat
+shows the reason and how long it has been waiting. Waiting survives app restarts without
+keeping the model running. Questions and approvals use the usual attention state.
+
+A message or a scheduled or webhook trigger resumes normal processing. Opening the chat does
+not. After checking an unchanged condition, the agent can wait again. **Stop** clears the wait
+without disabling schedules or webhooks.
+
 ## Snooze until later
 
 To change the choices in the snooze menu, open **Settings → Threads → Snooze options**.

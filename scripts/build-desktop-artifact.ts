@@ -4125,7 +4125,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   );
   yield* fs.writeFileString(
     provenancePath,
-    `${JSON.stringify({ version: appVersion, platform: options.platform, arch: options.arch, reusedBundles: options.skipBuild, source }, null, 2)}\n`,
+    `${yield* encodeJsonString({ version: appVersion, platform: options.platform, arch: options.arch, reusedBundles: options.skipBuild, source })}\n`,
   );
   copiedArtifacts.push(provenancePath);
 

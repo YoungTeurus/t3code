@@ -2224,6 +2224,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: (threadId) =>
                 Effect.succeed(threadId === boundThreadId ? boundThread : null),
+              waitForTrigger: () => Effect.succeed({ waitingWhenTurnEnds: true as const }),
             }),
             ServerSettings.layerTest(),
             Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -2241,6 +2242,44 @@ describe("OrchestratorMcpService provider resolution", () => {
           ),
         ),
       );
+
+    it.effect.each([
+      ["no automation", [], false],
+      ["paused automation", [task({ threadId: boundThreadId, enabled: false })], false],
+      ["another thread", [task({ threadId: ThreadId.make("thread:other") })], false],
+      ["unbound automation", [task({ threadId: null })], false],
+      [
+        "bound timer",
+        [task({ threadId: boundThreadId, schedule: { type: "interval", everyMs: 60_000 } })],
+        true,
+      ],
+      ["bound webhook", [task({ threadId: boundThreadId })], true],
+    ] as const)(
+      "requires enabled automation on the waiting thread: %s",
+      ([_name, tasks, allowed]) =>
+        Effect.gen(function* () {
+          const upserted = yield* Ref.make(0);
+          const scope: McpInvocationScope = {
+            ...supervisedClient,
+            client: undefined,
+            thread: {
+              threadId: boundThreadId,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              providerSessionId: "session:waiting",
+            },
+          };
+          yield* Effect.gen(function* () {
+            const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+            const waiting = mcp.waitForTrigger(scope, { reason: "External approval" });
+            if (allowed) assert.deepEqual(yield* waiting, { waitingWhenTurnEnds: true });
+            else {
+              const error = yield* waiting.pipe(Effect.flip);
+              assert.equal(error.code, "invalid_request");
+              assert.include(error.message, "enabled automation bound to this thread");
+            }
+          }).pipe(Effect.provide(service(tasks, liveThreadShell(boundThreadId), upserted)));
+        }),
+    );
 
     it.effect("hides a webhook URL from a caller below the task's modes", () =>
       Effect.gen(function* () {

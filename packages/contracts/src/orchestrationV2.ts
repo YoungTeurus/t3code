@@ -448,6 +448,13 @@ export const ThreadSnoozeDependencyWake = Schema.Struct({
   occurredAt: IsoDateTime,
 });
 
+export const ThreadTriggerWait = Schema.Struct({
+  runId: RunId,
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+  startedAt: IsoDateTime,
+});
+export type ThreadTriggerWait = typeof ThreadTriggerWait.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -492,6 +499,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozeDependency: Schema.optional(Schema.NullOr(ThreadSnoozeDependency)),
   snoozeDependencyWake: Schema.optional(Schema.NullOr(ThreadSnoozeDependencyWake)),
+  triggerWait: Schema.optional(Schema.NullOr(ThreadTriggerWait)),
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   guestShare: Schema.optional(Schema.NullOr(ThreadGuestShare)),
@@ -994,6 +1002,7 @@ function kindUnionWithFallback<
 const PendingBackgroundTaskFields = {
   taskId: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
+  startedAt: Schema.optional(IsoDateTime),
   /** The subagent task that started this work and waits on it. */
   parentTaskId: Schema.optional(TrimmedNonEmptyString),
   /**
@@ -2110,6 +2119,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozeDependency: Schema.optional(Schema.NullOr(ThreadSnoozeDependency)),
   snoozeDependencyWake: Schema.optional(Schema.NullOr(ThreadSnoozeDependencyWake)),
+  triggerWait: Schema.optional(Schema.NullOr(ThreadTriggerWait)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   pinnedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -3036,6 +3046,9 @@ export const OrchestrationV2Command = Schema.Union([
     expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
     /** Reject unless no message or run has landed on this thread. */
     expectedEmpty: Schema.optional(Schema.Boolean),
+    triggerWait: Schema.optional(
+      Schema.NullOr(Schema.Struct({ runId: RunId, reason: ThreadTriggerWait.fields.reason })),
+    ),
     limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecoveryUpdate)),
     /** Link (object) or unlink (null) a pull request; absent leaves it unchanged. */
     linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),

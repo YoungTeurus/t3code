@@ -17,6 +17,8 @@ import * as DateTime from "effect/DateTime";
 import { usageLimitBlockedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { describe, expect, it } from "vite-plus/test";
 
+import { resolveThreadWorkingStartedAt } from "./models.ts";
+import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   deriveReportedModelSelection,
@@ -96,6 +98,43 @@ describe("thread execution presentation", () => {
     expect(
       deriveThreadRuntime({ ...projection, runs: [failed, run("new", 2, "running")] }),
     ).toMatchObject({ status: "running", lastError: null, lastErrorClass: null });
+  });
+
+  it("keeps a completed trigger wait idle with its own duration and no live run", () => {
+    const completed = { ...run("trigger", 1, "completed"), completedAt: now };
+    const startedAt = "2026-07-28T10:05:00.000Z";
+    const projection = {
+      ...v2Projection,
+      runs: [completed],
+      thread: {
+        ...v2Projection.thread,
+        triggerWait: { runId: completed.id, reason: "IDM approval", startedAt },
+      },
+    };
+    expect(deriveThreadRuntime(projection)).toMatchObject({
+      status: "idle",
+      activeRunId: null,
+      activityStartedAt: null,
+    });
+    const runtime = deriveThreadRuntime(projection);
+    expect(
+      resolveThreadWorkingStartedAt({ latestRun: deriveLatestThreadRun(projection), runtime }),
+    ).toBeNull();
+    expect(
+      resolveThreadWorkingStartedAt({
+        latestRun: deriveLatestThreadRun(projection),
+        runtime,
+        pendingBackgroundTasks: derivePendingBackgroundWork({
+          latestRun: completed,
+          providerThreads: [],
+          turnItems: [],
+          triggerWait: projection.thread.triggerWait,
+        }),
+      }),
+    ).toBe(startedAt);
+    expect(
+      deriveThreadRuntime({ ...projection, runs: [{ ...completed, status: "failed" }] }),
+    ).toMatchObject({ status: "failed", activeRunId: null, activityStartedAt: null });
   });
 
   // regression: #15029 working timers no longer reset on every background wake

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderInstanceId, ProviderThreadId } from "@t3tools/contracts";
+import { ProviderInstanceId, ProviderThreadId, RunId } from "@t3tools/contracts";
 import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
@@ -17,6 +17,39 @@ describe("backgroundWorkHoldsCompletion", () => {
 });
 
 describe("derivePendingBackgroundWork", () => {
+  it.each(["completed", "failed", "interrupted", "cancelled", "running", "queued"] as const)(
+    "exposes a trigger wait only after its own successful run (%s)",
+    (status) => {
+      const runId = RunId.make("run:trigger");
+      const triggerWait = { runId, reason: "IDM approval", startedAt: "2026-10-30T12:00:00.000Z" };
+      const input = {
+        latestRun: { id: runId, ordinal: 1, status },
+        providerThreads: [],
+        turnItems: [],
+        triggerWait,
+      };
+      expect(derivePendingBackgroundWork(input)).toEqual(
+        status === "completed"
+          ? [
+              {
+                taskId: "trigger-wait",
+                kind: "monitor",
+                awaited: true,
+                description: "IDM approval",
+                startedAt: triggerWait.startedAt,
+              },
+            ]
+          : [],
+      );
+      expect(
+        derivePendingBackgroundWork({
+          ...input,
+          latestRun: { id: RunId.make("run:new"), ordinal: 2, status },
+        }),
+      ).toEqual([]);
+    },
+  );
+
   it("takes each subagent item's instance from its joined owner", () => {
     const owner = ProviderInstanceId.make("claude-owner");
     const tasks = derivePendingBackgroundWork({

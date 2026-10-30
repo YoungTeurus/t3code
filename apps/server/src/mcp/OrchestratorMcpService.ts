@@ -168,6 +168,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
   ) => Effect.Effect<OrchestratorMcpCreateThreadsResult, OrchestratorMcpFailure>;
+  readonly waitForTrigger: (
+    scope: McpInvocationScope,
+    input: { readonly reason: string },
+  ) => Effect.Effect<{ readonly waitingWhenTurnEnds: true }, OrchestratorMcpFailure>;
   readonly scheduleTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpScheduleTaskInput,
@@ -1835,6 +1839,30 @@ const make = Effect.gen(function* () {
   });
 
   return OrchestratorMcpService.of({
+    waitForTrigger: Effect.fn("OrchestratorMcpService.waitForTrigger")(function* (scope, input) {
+      yield* requireCapability(scope);
+      const caller = yield* requireThreadScope(scope, "t3_trigger_wait");
+      const { tasks } = yield* scheduledTasks
+        .list()
+        .pipe(
+          Effect.mapError((error) =>
+            failure("orchestration_error", `Could not check automations: ${error.message}`),
+          ),
+        );
+      if (!tasks.some((task) => task.enabled && task.threadId === caller.thread.threadId)) {
+        return yield* failure(
+          "invalid_request",
+          "Waiting requires an enabled automation bound to this thread. Create or enable a scheduled task or webhook first. For human input, ask a question instead.",
+        );
+      }
+      return yield* threadManagement
+        .waitForTrigger({
+          threadId: caller.thread.threadId,
+          commandId: CommandId.make(`mcp:trigger-wait:${yield* requestKey(undefined)}`),
+          reason: input.reason,
+        })
+        .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+    }),
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);

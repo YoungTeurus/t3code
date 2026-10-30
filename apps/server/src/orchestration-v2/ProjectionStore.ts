@@ -1461,6 +1461,7 @@ export function threadShellFromProjection(
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     runs,
     pullRequests: projection.thread.pullRequests,
+    triggerWait: projection.thread.triggerWait,
   });
   return {
     createdBy: projection.thread.createdBy,
@@ -1547,6 +1548,7 @@ export function threadShellFromProjection(
     snoozedAt: projection.thread.snoozedAt ?? null,
     snoozeDependency: projection.thread.snoozeDependency ?? null,
     snoozeDependencyWake: projection.thread.snoozeDependencyWake ?? null,
+    triggerWait: projection.thread.triggerWait ?? null,
     pinnedAt: projection.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
@@ -1815,6 +1817,7 @@ function shellFromState(input: {
     snoozedAt: input.state.thread.snoozedAt ?? null,
     snoozeDependency: input.state.thread.snoozeDependency ?? null,
     snoozeDependencyWake: input.state.thread.snoozeDependencyWake ?? null,
+    triggerWait: input.state.thread.triggerWait ?? null,
     pinnedAt: input.state.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,
@@ -6246,6 +6249,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     activeProviderThreadId: thread.activeProviderThreadId,
                     hasActiveRun: false,
                     pullRequests: thread.pullRequests,
+                    triggerWait: thread.triggerWait,
                   }),
                 } satisfies ProjectionSettlementCandidate;
               }),
@@ -6440,6 +6444,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             activeProviderThreadId: thread.activeProviderThreadId,
             hasActiveRun: row.active_run_id !== null,
             pullRequests: thread.pullRequests,
+            triggerWait: thread.triggerWait,
           }),
         ];
         return {

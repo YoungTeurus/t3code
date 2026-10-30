@@ -3193,6 +3193,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : null;
 
     const now = yield* DateTime.now;
+    if (command.type === "thread.metadata.update" && command.triggerWait != null) {
+      if (
+        thread.lineage.relationshipToParent === "subagent" ||
+        isProviderNativeSubagentThread(thread)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Delegated agents must report external blockers to their parent thread.",
+        });
+      }
+      const projection = yield* loadProjectionForCommand(command, ["runs"]);
+      const latestRun = projection.runs.reduce<OrchestrationV2Run | null>(
+        (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
+        null,
+      );
+      if (
+        latestRun?.id !== command.triggerWait.runId ||
+        latestRun.status !== "running" ||
+        thread.archivedAt !== null ||
+        thread.settledOverride === "settled"
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Waiting must be requested by the current running turn with no queued trigger.",
+        });
+      }
+    }
     if (command.type === "thread.metadata.update" && command.limitRecovery != null) {
       const projection = yield* loadProjectionForCommand(
         command,
@@ -3326,6 +3355,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...thread,
             snoozeDependency: null,
             archivedAt: now,
+            triggerWait: null,
             titleRegeneration: null,
             guestShare: null,
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
@@ -3340,6 +3370,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             settledOverride: "settled",
+            triggerWait: null,
             settledAt: alreadySettled ? thread.settledAt : (command.settledAt ?? now),
             pullRequests: thread.pullRequests?.map((link) => withPullRequestWatch(link, undefined)),
             unsettledAt: null,
@@ -3532,6 +3563,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   };
           return {
             ...thread,
+            ...(command.triggerWait === undefined
+              ? {}
+              : {
+                  triggerWait:
+                    command.triggerWait === null
+                      ? null
+                      : {
+                          ...command.triggerWait,
+                          startedAt: DateTime.formatIso(now),
+                        },
+                }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
@@ -5316,6 +5358,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...projection.thread,
           lastVisitedAt: DateTime.subtract(now, { milliseconds: 1 }),
         },
+      });
+      projection = applyToProjection(projection, event);
+    }
+
+    if (projection.thread.triggerWait != null) {
+      const event = yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: projection.thread.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: { ...projection.thread, triggerWait: null },
       });
       projection = applyToProjection(projection, event);
     }
@@ -11469,6 +11525,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     if (projection.thread.deletedAt !== null) return undefined;
+    if (projection.thread.triggerWait != null) {
+      yield* dispatchThreadMutation(
+        {
+          type: "thread.metadata.update",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          triggerWait: null,
+        },
+        events,
+        effects,
+      );
+      if (
+        !projection.runs.some((run) => ["preparing", "starting", "running"].includes(run.status)) &&
+        derivePendingBackgroundWork({
+          latestRun: projection.runs.findLast((run) => run.status !== "queued"),
+          providerThreads: projection.providerThreads,
+          turnItems: projection.turnItems,
+          activeProviderThreadId: projection.thread.activeProviderThreadId,
+          runs: projection.runs,
+        }).length === 0 &&
+        !projection.subagents.some(
+          (task) => task.origin === "app_owned" && task.childThreadId !== null,
+        )
+      )
+        return;
+    }
     // Queued after the interrupt, since a thread's effects run in order.
     const stopDelegatedTasks =
       command.stopDelegatedTasks === false ||

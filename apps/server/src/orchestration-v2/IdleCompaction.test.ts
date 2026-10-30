@@ -149,6 +149,12 @@ describe("idleCompactionWindow", () => {
     const compacted = records(cache);
     compacted.messages = [{ ...compacted.messages[0]!, text: "/compact" }];
     expect(idleCompactionWindow(compacted, NOW_MS)).toBeNull();
+    const waiting = records(cache);
+    waiting.thread = {
+      ...waiting.thread,
+      triggerWait: { runId, reason: "IDM approval", startedAt: DateTime.formatIso(at()) },
+    };
+    expect(idleCompactionWindow(waiting, NOW_MS)).toBeNull();
     const archived = records(cache);
     archived.thread = { ...archived.thread, archivedAt: at() };
     expect(idleCompactionWindow(archived, NOW_MS)).toBeNull();

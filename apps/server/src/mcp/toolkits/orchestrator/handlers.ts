@@ -60,6 +60,13 @@ const handlers = {
         );
       }),
   ),
+  t3_trigger_wait: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.waitForTrigger(scope, input);
+    }),
+  ),
   t3_background_wait: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const { scope, threads } = yield* readCaller();

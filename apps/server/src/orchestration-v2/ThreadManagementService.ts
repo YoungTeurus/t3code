@@ -458,6 +458,16 @@ export interface ThreadManagementServiceShape {
   readonly stopWorkflow: (
     input: OrchestrationV2StopWorkflowInput,
   ) => Effect.Effect<void, OrchestrationV2StopWorkflowError>;
+  readonly waitForTrigger: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly reason: string;
+  }) => Effect.Effect<
+    { readonly waitingWhenTurnEnds: true },
+    | Orchestrator.OrchestratorV2Error
+    | ThreadManagementProviderInstanceDisabledError
+    | ThreadManagementBackgroundWaitError
+  >;
   readonly awaitBackgroundTasks: (input: {
     readonly threadId: ThreadId;
     readonly taskIds: ReadonlyArray<string>;
@@ -1166,6 +1176,25 @@ const make = Effect.gen(function* () {
     (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
   );
 
+  const waitForTrigger: ThreadManagementServiceShape["waitForTrigger"] = Effect.fn(
+    "ThreadManagementService.waitForTrigger",
+  )(function* (input) {
+    const shell = yield* orchestrator.getThreadShell(input.threadId);
+    if (shell?.activeRunId == null) {
+      return yield* new ThreadManagementBackgroundWaitError({
+        threadId: input.threadId,
+        reason: "unavailable",
+      });
+    }
+    yield* dispatch({
+      type: "thread.metadata.update",
+      threadId: input.threadId,
+      commandId: input.commandId,
+      triggerWait: { runId: shell.activeRunId, reason: input.reason },
+    });
+    return { waitingWhenTurnEnds: true };
+  });
+
   const awaitBackgroundTasks: ThreadManagementServiceShape["awaitBackgroundTasks"] = Effect.fn(
     "ThreadManagementService.awaitBackgroundTasks",
   )(function* (input) {
@@ -1363,6 +1392,7 @@ const make = Effect.gen(function* () {
     stopDelegatedTasks,
     stopWorkflow,
     awaitBackgroundTasks,
+    waitForTrigger,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     approvalAttention: orchestrator.approvalAttention,
     remoteApprovalObservation: orchestrator.remoteApprovalObservation,

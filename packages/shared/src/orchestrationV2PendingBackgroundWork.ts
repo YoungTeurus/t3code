@@ -4,6 +4,7 @@ import type {
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
   ThreadId,
+  ThreadTriggerWait,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
@@ -226,6 +227,7 @@ export function pendingBackgroundTurnItems<Item extends PendingBackgroundWorkTur
 }
 
 export function derivePendingBackgroundWork(input: {
+  readonly triggerWait?: ThreadTriggerWait | null | undefined;
   readonly latestRun: PendingBackgroundWorkRun | null | undefined;
   readonly providerThreads: ReadonlyArray<PendingBackgroundWorkProviderThread>;
   readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
@@ -252,6 +254,15 @@ export function derivePendingBackgroundWork(input: {
   }
 
   const byTaskId = new Map<string, PendingBackgroundWorkTask>();
+  if (input.triggerWait?.runId === input.latestRun.id && input.latestRun.status === "completed") {
+    byTaskId.set("trigger-wait", {
+      taskId: "trigger-wait",
+      kind: "monitor",
+      awaited: true,
+      description: input.triggerWait.reason,
+      startedAt: input.triggerWait.startedAt,
+    });
+  }
 
   const providerThreads =
     input.activeProviderThreadId === undefined || input.activeProviderThreadId === null

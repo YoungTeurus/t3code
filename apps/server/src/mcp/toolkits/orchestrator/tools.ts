@@ -137,6 +137,16 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   .annotate(Tool.Title, "Stop a workflow")
   .annotate(Tool.Destructive, true);
 
+const TriggerWaitTool = Tool.make("t3_trigger_wait", {
+  description:
+    "Leave this top-level thread in Working / Waiting after this turn succeeds, without keeping the model running. Use when authorized work is blocked on an external event and an enabled scheduled task or webhook is bound to this thread. Not for human input: ask a question or request approval instead. Supply a short reason. Then finish your turn. Any incoming message or trigger clears the wait; opening the chat does not. After a check with no change, call again to wait further. Stop clears waiting only; schedules and webhooks stay enabled. Does not create a trigger or wait inside this tool.",
+  parameters: Schema.Struct({ reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)) }),
+  success: Schema.Struct({ waitingWhenTurnEnds: Schema.Literal(true) }),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+}).annotate(Tool.Title, "Wait for the next trigger");
+
 const BackgroundWaitTool = Tool.make("t3_background_wait", {
   description:
     "Keep this thread in Working while background work runs. Pass its task ID after starting it. Not for work left running (dev server, watcher). `waiting=false` clears. Does not stop the task. Claude only.",
@@ -354,6 +364,7 @@ export const OrchestratorToolkit = Toolkit.make(
   TaskCancelTool,
   WorkflowStopTool,
   BackgroundWaitTool,
+  TriggerWaitTool,
   ScheduleTaskTool,
   ListScheduledTasksTool,
   DeleteScheduledTaskTool,

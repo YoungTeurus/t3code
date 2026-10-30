@@ -386,9 +386,14 @@ export function resolveThreadWorkingStartedAt(input: {
     "runId" | "startedAt" | "requestedAt" | "completedAt"
   > | null;
   readonly runtime: Pick<ThreadRuntimeSummary, "activeRunId" | "activityStartedAt"> | null;
+  readonly pendingBackgroundTasks?: EnvironmentThreadShell["pendingBackgroundTasks"];
 }): string | null {
   const valid = (value: string | null | undefined) =>
     value != null && Number.isFinite(Date.parse(value)) ? value : null;
+  const waitingSince = input.pendingBackgroundTasks?.find(
+    (task) => task.taskId === "trigger-wait",
+  )?.startedAt;
+  if (waitingSince !== undefined) return valid(waitingSince);
   if (input.runtime?.activityStartedAt !== undefined) return valid(input.runtime.activityStartedAt);
   const run = input.latestRun;
   if (run?.completedAt === null && run.runId === input.runtime?.activeRunId) {

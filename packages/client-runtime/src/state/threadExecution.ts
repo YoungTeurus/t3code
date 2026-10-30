@@ -232,16 +232,16 @@ export function deriveThreadStructureRuntime(
   const liveActivityRun = latestMatchingRun(projection, (run) =>
     ACTIVITY_RUN_STATUSES.has(run.status),
   );
-  const backgroundWorkHoldsRun = backgroundWorkHoldsCompletion(
-    derivePendingBackgroundWork({
-      latestRun: latestRunProjection,
-      providerThreads: projection.providerThreads,
-      turnItems: projection.turnItems,
-      activeProviderThreadId: projection.thread.activeProviderThreadId,
-      runs: projection.runs,
-      pullRequests: projection.thread.pullRequests,
-    }),
-  );
+  const backgroundTasks = derivePendingBackgroundWork({
+    latestRun: latestRunProjection,
+    providerThreads: projection.providerThreads,
+    turnItems: projection.turnItems,
+    activeProviderThreadId: projection.thread.activeProviderThreadId,
+    runs: projection.runs,
+    pullRequests: projection.thread.pullRequests,
+    triggerWait: projection.thread.triggerWait,
+  });
+  const backgroundWorkHoldsRun = backgroundWorkHoldsCompletion(backgroundTasks);
   // A pull request watch can hold a thread that never ran.
   if (
     latestRun === null &&
@@ -299,6 +299,7 @@ export interface PendingBackgroundWorkItem {
   readonly kind: BackgroundWorkKind;
   readonly label: string;
   readonly childThreadId: ThreadId | undefined;
+  readonly startedAt?: string | undefined;
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -326,6 +327,7 @@ export function presentPendingBackgroundWork(
           : description;
       return {
         taskId: task.taskId,
+        ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
         kind: task.kind,
         label:
           label === undefined || label.length === 0

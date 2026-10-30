@@ -2576,3 +2576,149 @@ it.effect("dispatch records the command outcome and its duration", () =>
     assert.strictEqual((yield* durations).count - durationsBefore, 1);
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect(
+  "persists trigger waiting, preserves visits, and clears it on Stop or any incoming message",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:trigger-wait");
+      const runId = RunId.make("run:trigger-wait");
+      const now = yield* DateTime.now;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("trigger:create"),
+        threadId,
+        projectId: ProjectId.make("project:trigger"),
+        title: "Trigger waiting",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const run = {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: instanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("trigger:input"),
+        rootNodeId: NodeId.make("trigger:node"),
+        activeAttemptId: null,
+        status: "running" as const,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* projections.apply({
+        id: EventId.make("trigger:run"),
+        type: "run.created",
+        threadId,
+        occurredAt: now,
+        payload: run,
+      });
+      const arm = (id: string) =>
+        orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(id),
+          threadId,
+          triggerWait: { runId, reason: "IDM approval" },
+        });
+      const rootThread = (yield* projections.getThreadProjection(threadId)).thread;
+      yield* projections.apply({
+        id: EventId.make("trigger:child"),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...rootThread,
+          lineage: {
+            ...rootThread.lineage,
+            parentThreadId: ThreadId.make("parent"),
+            relationshipToParent: "subagent",
+          },
+        },
+      });
+      assert.isTrue(Result.isFailure(yield* arm("trigger:child-arm").pipe(Effect.result)));
+      yield* projections.apply({
+        id: EventId.make("trigger:root"),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: rootThread,
+      });
+      yield* arm("trigger:arm");
+      assert.deepEqual((yield* projections.getThreadShell(threadId))?.pendingBackgroundTasks, []);
+      yield* projections.apply({
+        id: EventId.make("trigger:complete"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: { ...run, status: "completed", completedAt: now },
+      });
+      const waiting = yield* projections.getThreadShell(threadId);
+      assert.equal(waiting?.pendingBackgroundTasks?.[0]?.description, "IDM approval");
+      assert.equal(waiting?.triggerWait?.reason, "IDM approval");
+      assert.equal(
+        waiting?.pendingBackgroundTasks?.[0]?.startedAt,
+        waiting?.triggerWait?.startedAt,
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.visit",
+        commandId: CommandId.make("trigger:visit"),
+        threadId,
+        visitedAt: DateTime.formatIso(now),
+        opened: true,
+      });
+      assert.equal(
+        (yield* projections.getThreadShell(threadId))?.pendingBackgroundTasks?.length,
+        1,
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("trigger:stop"),
+        threadId,
+      });
+      assert.isNull((yield* projections.getThreadShell(threadId))?.triggerWait);
+      assert.deepEqual((yield* projections.getThreadShell(threadId))?.pendingBackgroundTasks, []);
+      const stopped = yield* projections.getThreadProjection(threadId);
+      assert.equal(stopped.runs[0]?.status, "completed");
+      assert.isTrue(Result.isFailure(yield* arm("trigger:stale-arm").pipe(Effect.result)));
+      for (const createdBy of ["agent", "user"] as const) {
+        yield* projections.apply({
+          id: EventId.make(`trigger:restore:${createdBy}`),
+          type: "thread.metadata-updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...stopped.thread, triggerWait: waiting?.triggerWait },
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`trigger:wake:${createdBy}`),
+          threadId,
+          messageId: MessageId.make(`trigger:wake:${createdBy}`),
+          text: "Check again",
+          attachments: [],
+          dispatchMode: { type: "defer_start" },
+          createdBy,
+          creationSource: "mcp",
+        });
+        assert.isNull((yield* projections.getThreadShell(threadId))?.triggerWait);
+      }
+      yield* projections.apply({
+        id: EventId.make("trigger:running-again"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: run,
+      });
+      assert.isTrue(Result.isFailure(yield* arm("trigger:queued-arm").pipe(Effect.result)));
+    }).pipe(Effect.provide(layerTest)),
+);
