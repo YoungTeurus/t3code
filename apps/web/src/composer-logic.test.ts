@@ -401,15 +401,21 @@ describe("expandCollapsedComposerCursor", () => {
     );
   });
 
-  it("maps collapsed markdown file links to their expanded source offsets", () => {
-    const text = "what's in [AGENTS.md](AGENTS.md) please";
-    const collapsedCursorAfterMention = "what's in ".length + 2;
-    const expandedCursorAfterMention = "what's in [AGENTS.md](AGENTS.md) ".length;
+  it.each(["[AGENTS.md](AGENTS.md)", "[@TelegramEve](plugin://messages@personal)"])(
+    "maps collapsed links to their expanded source offsets: %s",
+    (source) => {
+      const text = `what's in ${source} please`;
+      const collapsedCursorAfterMention = "what's in ".length + 2;
+      const expandedCursorAfterMention = `what's in ${source} `.length;
 
-    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
-      expandedCursorAfterMention,
-    );
-  });
+      expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
+        expandedCursorAfterMention,
+      );
+      expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
+        collapsedCursorAfterMention,
+      );
+    },
+  );
 
   it("allows path trigger detection to close after selecting a mention", () => {
     const text = "what's in my @AGENTS.md ";

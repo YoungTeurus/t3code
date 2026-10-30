@@ -20,7 +20,7 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import type * as ServerConfig from "../config.ts";
 import type * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -133,6 +133,7 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const withWorkspaceLease = yield* makeWorkspaceLease;
 
     const execute = Effect.fn("orchestrationV2.checkpointRollback.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -201,20 +202,28 @@ export const layer: Layer.Layer<
 
       const { worktreePath, branch } = context.thread;
       // Recreated only where the server would have made it, as turn start does.
-      if (
-        worktreePath != null &&
-        branch != null &&
-        !(yield* fileSystem.exists(worktreePath)) &&
-        (yield* isManagedWorktreePath(worktreePath))
-      ) {
+      if (worktreePath != null && branch != null) {
         const project = yield* projects.get(context.thread.projectId);
         if (Option.isSome(project)) {
-          yield* gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot });
-          yield* gitWorkflow.createWorktree({
-            cwd: project.value.workspaceRoot,
-            refName: branch,
-            path: worktreePath,
-          });
+          const recovered = yield* (
+            gitWorkflow.recoverWorktree?.({
+              cwd: project.value.workspaceRoot,
+              path: worktreePath,
+              branch,
+            }) ?? Effect.succeed(false)
+          );
+          if (
+            !recovered &&
+            !(yield* fileSystem.exists(worktreePath)) &&
+            (yield* isManagedWorktreePath(worktreePath))
+          ) {
+            yield* gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot });
+            yield* gitWorkflow.createWorktree({
+              cwd: project.value.workspaceRoot,
+              refName: branch,
+              path: worktreePath,
+            });
+          }
         }
       }
 

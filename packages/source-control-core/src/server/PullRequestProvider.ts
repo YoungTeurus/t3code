@@ -486,6 +486,7 @@ export interface PullRequestProviderApi {
   readonly submitReview: (
     input: ProviderRepositoryRef & {
       readonly number: number;
+      readonly expectedHeadSha?: string | undefined;
       readonly verdict: PullRequestReviewVerdict;
       readonly body: string;
       readonly comments: ReadonlyArray<PullRequestReviewCommentDraft>;

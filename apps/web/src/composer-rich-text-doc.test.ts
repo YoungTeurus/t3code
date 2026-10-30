@@ -59,6 +59,11 @@ const schema = getSchemaByResolvedExtensions(
     }),
     ComposerCodeExtension,
     stubAtom("composer-mention", { path: { default: "" }, source: { default: "" } }),
+    stubAtom("composer-plugin", {
+      pluginId: { default: "" },
+      label: { default: "" },
+      source: { default: "" },
+    }),
     stubAtom("composer-skill", {
       skillName: { default: "" },
       skillLabel: { default: "" },
@@ -90,6 +95,15 @@ function roundTrip(value: string) {
   doc.check();
   return serializeEditorDoc(doc);
 }
+
+it("round-trips a native plugin mention as a plugin atom without file context", () => {
+  const value = "Use [@Tools \\[one\\]](plugin://tools@team) please";
+  const doc = schema.nodeFromJSON(buildDocJson(value, () => null));
+  expect(doc.firstChild?.child(1).type.name).toBe("composer-plugin");
+  expect(doc.firstChild?.child(1).attrs.pluginId).toBe("tools@team");
+  expect(serializeEditorDoc(doc).value).toBe(value);
+  expect(roundTrip(value).contextIds).toEqual([]);
+});
 
 describe("editable math source", () => {
   it.each(["app/routes/posts.$postId.tsx", "pages/posts/[id].tsx"])(

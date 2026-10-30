@@ -12,6 +12,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import { explicitBareRepositoryEnv } from "../vcs/VcsProcess.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
 const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
 // Minute-by-minute sweeps need cached hits; clone, publish and PR discovery force refresh.
@@ -19,6 +20,7 @@ const DEFAULT_POSITIVE_CACHE_TTL = Duration.minutes(15);
 const DEFAULT_NEGATIVE_CACHE_TTL = Duration.minutes(1);
 
 export interface RepositoryIdentityResolverOptions {
+  readonly resolveNative?: (cwd: string) => Effect.Effect<RepositoryIdentity | null>;
   readonly cacheCapacity?: number;
   readonly refine?: (
     identity: RepositoryIdentity,
@@ -226,6 +228,7 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const cacheCapacity = options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY;
   const refine = options.refine ?? Effect.succeed;
+  const resolveNative = options.resolveNative ?? (() => Effect.succeed(null));
   const timeToLive = (exit: Exit.Exit<unknown>) =>
     Exit.match(exit, {
       onSuccess: (value) =>
@@ -258,6 +261,8 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
 
   const resolve: RepositoryIdentityResolver["Service"]["resolve"] = Effect.fnUntraced(
     function* (cwd, options) {
+      const native = yield* resolveNative(cwd);
+      if (native !== null) return native;
       if (options?.refresh) yield* Cache.invalidate(repositoryRootCache, cwd);
       const cacheKey = yield* Cache.get(repositoryRootCache, cwd);
       if (cacheKey === null) return null;
@@ -269,6 +274,30 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   return RepositoryIdentityResolver.of({ resolve });
 });
 
-export const layer = Layer.effect(RepositoryIdentityResolver, make()).pipe(
-  Layer.provide(ProcessRunner.layer),
-);
+export const makeNativeResolver = Effect.gen(function* () {
+  const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+  return Effect.fn("RepositoryIdentityResolver.native")(function* (cwd: string) {
+    const detected = yield* registry.detect({ cwd }).pipe(Effect.orElseSucceed(() => null));
+    if (detected?.kind !== "arc") return null;
+    const remotes = yield* detected.driver.listRemotes(cwd).pipe(Effect.orElseSucceed(() => null));
+    const remote = remotes?.remotes.find((entry) => entry.isPrimary);
+    if (!remote) return null;
+    const canonicalKey = sourceControlDefinitions.repositoryKeyFromRemote(remote.url);
+    const provider = sourceControlDefinitions.recognizeRemote(remote.url);
+    return {
+      canonicalKey,
+      locator: { source: "arc", remoteName: remote.name, remoteUrl: remote.url },
+      rootPath: detected.repository.rootPath,
+      displayName: "Arcadia",
+      name: "arcadia",
+      ...(provider ? { provider: provider.kind } : {}),
+    } satisfies RepositoryIdentity;
+  });
+});
+
+export const layer = Layer.effect(
+  RepositoryIdentityResolver,
+  Effect.gen(function* () {
+    return yield* make({ resolveNative: yield* makeNativeResolver });
+  }),
+).pipe(Layer.provide(ProcessRunner.layer));

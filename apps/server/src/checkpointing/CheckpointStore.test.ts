@@ -18,6 +18,49 @@ import * as CheckpointStore from "./CheckpointStore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ServerConfig from "../config.ts";
+import * as VcsDriver from "../vcs/VcsDriver.ts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+
+it.effect("admits native Arc checkpoints through the existing orchestration repository probe", () =>
+  Effect.gen(function* () {
+    const unused = () => Effect.die("The repository probe must not invoke checkpoint operations");
+    const driver = yield* VcsDriver.VcsDriver.pipe(
+      Effect.provide(
+        Layer.mock(VcsDriver.VcsDriver)({
+          checkpoints: {
+            captureCheckpoint: unused,
+            hasCheckpointRef: unused,
+            restoreCheckpoint: unused,
+            diffCheckpoints: unused,
+            listAuthoredPaths: unused,
+            deleteCheckpointRefs: unused,
+          },
+        }),
+      ),
+    );
+    const observedAt = yield* DateTime.now;
+    const registry = Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+      detect: (input) =>
+        Effect.succeed(
+          input.requestedKind === "git"
+            ? null
+            : {
+                kind: "arc",
+                repository: {
+                  kind: "arc",
+                  rootPath: "/arcadia",
+                  metadataPath: "/arcadia/.arc",
+                  freshness: { source: "live-local", observedAt, expiresAt: Option.none() },
+                },
+                driver,
+              },
+        ),
+    });
+    const store = yield* CheckpointStore.make.pipe(Effect.provide(registry));
+    expect(yield* store.isGitRepository("/arcadia/service")).toBe(true);
+  }),
+);
 
 function checkpointRefForThreadTurn(threadId: ThreadId, turnCount: number): CheckpointRef {
   return CheckpointRef.make(`refs/t3/checkpoints/${Base64Url.encode(threadId)}/turn/${turnCount}`);

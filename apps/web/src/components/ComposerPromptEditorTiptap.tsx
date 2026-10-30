@@ -28,6 +28,7 @@ import type {
   AssistantCitation,
   ComposerContextClipboardFragment,
   ServerProviderSkill,
+  ServerProviderPlugin,
 } from "@t3tools/contracts";
 import {
   serializeAssistantCitation,
@@ -154,6 +155,7 @@ export interface ComposerPromptEditorProps {
     | ((fragment: ComposerContextClipboardFragment) => ReadonlyMap<string, string>)
     | undefined;
   skills: ReadonlyArray<ServerProviderSkill>;
+  plugins?: ReadonlyArray<ServerProviderPlugin> | undefined;
   disabled: boolean;
   placeholder: string;
   ariaLabel?: string | undefined;
@@ -211,6 +213,8 @@ const ComposerCitationCommentContext = createContext<{
 });
 
 const RichComposerSkillsContext = createContext<ReadonlyArray<ServerProviderSkill>>([]);
+const EMPTY_PLUGINS: ReadonlyArray<ServerProviderPlugin> = [];
+const RichComposerPluginsContext = createContext(EMPTY_PLUGINS);
 
 const SURROUND_CLOSE: Record<string, string> = {
   "(": ")",
@@ -318,6 +322,43 @@ const ComposerSkillExtension = Node.create({
     return ReactNodeViewRenderer(ComposerSkillNodeView);
   },
 });
+
+const ComposerPluginExtension = Node.create({
+  name: "composer-plugin",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return { pluginId: { default: "" }, label: { default: "" }, source: { default: "" } };
+  },
+  parseHTML() {
+    return [{ tag: "span[data-composer-plugin]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["span", { "data-composer-plugin": "", ...HTMLAttributes }];
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(ComposerPluginNodeView);
+  },
+});
+
+function ComposerPluginNodeView({ node }: NodeViewProps) {
+  const plugins = use(RichComposerPluginsContext);
+  const plugin = plugins.find((candidate) => candidate.id === node.attrs.pluginId);
+  return (
+    <NodeViewWrapper as="span" className={CHIP_NODE_SELECTION_CLASS_NAME}>
+      <ContextChip
+        contentEditable={false}
+        spellCheck={false}
+        data-composer-plugin-chip="true"
+        title={node.attrs.pluginId as string}
+      >
+        {plugin?.name ?? (node.attrs.label as string)}
+      </ContextChip>
+    </NodeViewWrapper>
+  );
+}
 
 /** Chip presentation for `$name`, or null when the provider does not offer it to users. */
 function composerSkillMeta(
@@ -837,6 +878,7 @@ function createComposerExtensions(richText: boolean) {
     ComposerTextDirectionExtension,
     ComposerMentionExtension,
     ComposerSkillExtension,
+    ComposerPluginExtension,
     ComposerCitationExtension,
     ComposerContextReferenceExtension,
     ComposerMarkersExtension,
@@ -932,6 +974,7 @@ function ComposerPromptEditorTiptapInner(
     buildContextClipboardFragment,
     importContextFragment,
     skills,
+    plugins = EMPTY_PLUGINS,
     disabled,
     placeholder,
     ariaLabel,
@@ -1371,6 +1414,7 @@ function ComposerPromptEditorTiptapInner(
           const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`);
           const isChip = (token: (typeof tokens)[number] | undefined) =>
             token?.type === "mention" ||
+            token?.type === "plugin" ||
             (token?.type === "skill" && skillLabelFor(token.value) !== null);
           const lastToken = tokens.at(-1);
           if (isChip(lastToken) && lastToken?.end === text.length) {
@@ -1761,72 +1805,74 @@ function ComposerPromptEditorTiptapInner(
   };
 
   return (
-    <RichComposerSkillsContext value={skills}>
-      <ComposerContextRecordsContext value={contextRecords}>
-        <ComposerCitationCommentContext value={citationCommentActions}>
-          <div
-            className={cn(
-              "relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm)) max-sm:pointer-coarse:text-(length:--font-size-prompt-touch)",
-              containerClassName,
-            )}
-          >
-            <EditorContent
-              editor={editor}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Control" ||
-                  event.key === "Meta" ||
-                  event.key === "Alt" ||
-                  event.key === "Shift"
-                ) {
-                  onPageScrollRelease?.();
-                }
-                if (event.key !== "PageUp" && event.key !== "PageDown") return;
-                const target = event.currentTarget.querySelector(
-                  '[data-testid="composer-editor"]',
-                ) as HTMLElement | null;
-                if (!target) return;
-                const pageScrollKey = getTimelinePageScrollKey({
-                  altKey: event.altKey,
-                  clientHeight: target.clientHeight,
-                  ctrlKey: event.ctrlKey,
-                  defaultPrevented: event.defaultPrevented,
-                  isComposing: event.nativeEvent.isComposing,
-                  key: event.key,
-                  keyCode: event.keyCode,
-                  metaKey: event.metaKey,
-                  scrollHeight: target.scrollHeight,
-                  scrollTop: target.scrollTop,
-                  shiftKey: event.shiftKey,
-                });
-                if (!pageScrollKey) {
-                  onPageScrollRelease?.();
-                  return;
-                }
-                if (!onPageScrollKeyDown) return;
-                event.preventDefault();
-                onPageScrollKeyDown(pageScrollKey);
-              }}
-              onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
-              onBlur={onPageScrollRelease}
-              onPasteCapture={onPaste}
-              onCopyCapture={(event) => handleCopyCut(event, false)}
-              onCutCapture={(event) => handleCopyCut(event, true)}
-            />
-            {isEmpty && contextRecords.size === 0 && placeholder ? (
-              <div
-                className={cn(
-                  "pointer-events-none absolute inset-0 leading-relaxed text-placeholder",
-                  placeholderClassName,
-                )}
-              >
-                {placeholder}
-              </div>
-            ) : null}
-          </div>
-        </ComposerCitationCommentContext>
-      </ComposerContextRecordsContext>
-    </RichComposerSkillsContext>
+    <RichComposerPluginsContext value={plugins}>
+      <RichComposerSkillsContext value={skills}>
+        <ComposerContextRecordsContext value={contextRecords}>
+          <ComposerCitationCommentContext value={citationCommentActions}>
+            <div
+              className={cn(
+                "relative flow-root font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm)) max-sm:pointer-coarse:text-(length:--font-size-prompt-touch)",
+                containerClassName,
+              )}
+            >
+              <EditorContent
+                editor={editor}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Control" ||
+                    event.key === "Meta" ||
+                    event.key === "Alt" ||
+                    event.key === "Shift"
+                  ) {
+                    onPageScrollRelease?.();
+                  }
+                  if (event.key !== "PageUp" && event.key !== "PageDown") return;
+                  const target = event.currentTarget.querySelector(
+                    '[data-testid="composer-editor"]',
+                  ) as HTMLElement | null;
+                  if (!target) return;
+                  const pageScrollKey = getTimelinePageScrollKey({
+                    altKey: event.altKey,
+                    clientHeight: target.clientHeight,
+                    ctrlKey: event.ctrlKey,
+                    defaultPrevented: event.defaultPrevented,
+                    isComposing: event.nativeEvent.isComposing,
+                    key: event.key,
+                    keyCode: event.keyCode,
+                    metaKey: event.metaKey,
+                    scrollHeight: target.scrollHeight,
+                    scrollTop: target.scrollTop,
+                    shiftKey: event.shiftKey,
+                  });
+                  if (!pageScrollKey) {
+                    onPageScrollRelease?.();
+                    return;
+                  }
+                  if (!onPageScrollKeyDown) return;
+                  event.preventDefault();
+                  onPageScrollKeyDown(pageScrollKey);
+                }}
+                onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
+                onBlur={onPageScrollRelease}
+                onPasteCapture={onPaste}
+                onCopyCapture={(event) => handleCopyCut(event, false)}
+                onCutCapture={(event) => handleCopyCut(event, true)}
+              />
+              {isEmpty && contextRecords.size === 0 && placeholder ? (
+                <div
+                  className={cn(
+                    "pointer-events-none absolute inset-0 leading-relaxed text-placeholder",
+                    placeholderClassName,
+                  )}
+                >
+                  {placeholder}
+                </div>
+              ) : null}
+            </div>
+          </ComposerCitationCommentContext>
+        </ComposerContextRecordsContext>
+      </RichComposerSkillsContext>
+    </RichComposerPluginsContext>
   );
 }
 

@@ -1,4 +1,5 @@
 import * as AzureDevOpsDriver from "@t3tools/source-control-azure-devops/server/driver";
+import * as ArcanumDriver from "@t3tools/source-control-arcanum/server/driver";
 import * as BitbucketDriver from "@t3tools/source-control-bitbucket/server/driver";
 import { builtInSourceControlDefinitions } from "@t3tools/source-control-definitions/registry";
 import * as ForgejoDriver from "@t3tools/source-control-forgejo/server/driver";
@@ -14,6 +15,7 @@ export const BUILT_IN_SOURCE_CONTROL_DRIVER_LIST = [
   ForgejoDriver.driver,
   BitbucketDriver.driver,
   AzureDevOpsDriver.driver,
+  ArcanumDriver.driver,
 ] as const;
 
 export const sourceControlDefinitions = builtInSourceControlDefinitions;

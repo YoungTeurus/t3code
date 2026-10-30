@@ -3,12 +3,17 @@ import { create } from "zustand";
 
 export type PendingReviewComment = PullRequestReviewCommentDraft & { readonly id: string };
 
-// Content-derived ids can collide across comments; use a counter.
-let pendingCommentSequence = 0;
-
 export function nextPendingReviewCommentId(): string {
-  pendingCommentSequence += 1;
-  return `pending-review-comment-${pendingCommentSequence}`;
+  return `pending-review-comment-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
+}
+
+export function hasStaleReviewComments(
+  comments: ReadonlyArray<PendingReviewComment>,
+  headSha: string | undefined,
+): boolean {
+  return comments.some(
+    (comment) => comment.expectedHeadSha !== undefined && comment.expectedHeadSha !== headSha,
+  );
 }
 
 export function pullRequestReviewKey(reference: PullRequestRef): string {

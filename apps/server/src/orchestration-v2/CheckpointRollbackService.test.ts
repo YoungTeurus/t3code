@@ -55,7 +55,9 @@ const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
       NodeServices.layer,
       Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
       ServerSettings.layerTest(),
-      Layer.mock(GitWorkflow.GitWorkflowService)({}),
+      Layer.mock(GitWorkflow.GitWorkflowService)({
+        recoverWorktree: () => Effect.succeed(false),
+      }),
       Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
     ),
   ),
@@ -233,6 +235,7 @@ it.effect.each([
             },
           }),
           Layer.mock(GitWorkflow.GitWorkflowService)({
+            recoverWorktree: () => Effect.succeed(false),
             pruneWorktrees: (input) =>
               Effect.sync(() => {
                 assert.deepEqual(input, { cwd: workspaceRoot });

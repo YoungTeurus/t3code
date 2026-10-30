@@ -169,7 +169,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
 
 export const RepositoryIdentityLocator = Schema.Struct({
-  source: Schema.Literal("git-remote"),
+  source: Schema.Literals(["git-remote", "arc"]),
   remoteName: TrimmedNonEmptyString,
   remoteUrl: TrimmedNonEmptyString,
 });

@@ -115,10 +115,13 @@ export function PullRequestReviewSheet({
               input: {
                 ...target.input,
                 verdict: verdict.value,
+                ...(result.data?.headSha ? { expectedHeadSha: result.data.headSha } : {}),
                 body,
-                comments: submitted.comments.map(
-                  ({ id: _id, headSha: _sha, code: _code, ...comment }) => comment,
-                ),
+                comments: submitted.comments.map(({ id, headSha, code: _code, ...comment }) => ({
+                  ...comment,
+                  clientId: id,
+                  expectedHeadSha: headSha,
+                })),
               },
             })
           : await comment({ ...target, input: { ...target.input, body } });

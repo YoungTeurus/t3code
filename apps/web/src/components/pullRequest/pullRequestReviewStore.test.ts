@@ -5,6 +5,7 @@ import {
   type PendingReviewComment,
   pullRequestReviewKey,
   usePullRequestReviewStore,
+  hasStaleReviewComments,
 } from "./pullRequestReviewStore";
 
 function comment(id: string, body = id): PendingReviewComment {
@@ -12,6 +13,12 @@ function comment(id: string, body = id): PendingReviewComment {
 }
 
 describe("pull request review drafts", () => {
+  it("keeps line comments bound to the revision where they were written", () => {
+    const comments = [{ ...comment("line"), expectedHeadSha: "old-head" }];
+    expect(hasStaleReviewComments(comments, "old-head")).toBe(false);
+    expect(hasStaleReviewComments(comments, "new-head")).toBe(true);
+    expect(hasStaleReviewComments(comments, undefined)).toBe(true);
+  });
   beforeEach(() => {
     usePullRequestReviewStore.setState({ drafts: {}, summaries: {} });
   });

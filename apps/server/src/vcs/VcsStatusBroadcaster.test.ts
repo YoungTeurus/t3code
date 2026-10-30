@@ -31,6 +31,32 @@ import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
+it.effect("invalidates sibling project status when their shared Arc checkout changes", () =>
+  Effect.gen(function* () {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+    yield* Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      yield* broadcaster.getStatus({ cwd: "/arcadia/a" });
+      yield* broadcaster.getStatus({ cwd: "/arcadia/b" });
+      state.currentLocalStatus = { ...baseLocalStatus, refName: "another-branch" };
+      yield* broadcaster.refreshLocalStatus("/arcadia/a");
+      assert.equal((yield* broadcaster.getStatus({ cwd: "/arcadia/b" })).refName, "another-branch");
+    }).pipe(
+      Effect.provide(layerTestFor(state)),
+      Effect.provideService(VcsStatusBroadcaster.VcsCheckoutIdentity, () =>
+        Effect.succeed("arc:/arcadia"),
+      ),
+    );
+  }),
+);
+
 const baseLocalStatus: VcsStatusLocalResult = {
   isRepo: true,
   sourceControlProvider: {

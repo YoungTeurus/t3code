@@ -8,8 +8,10 @@ import type {
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestListInput,
   ServerProvider,
+  ServerProviderPluginCatalog,
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -28,6 +30,7 @@ import {
   getProviderSlashCommandsForSlashMenu,
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { pluginMenuDescription, searchProviderPlugins } from "../../providerPluginMentions";
 import { useThreadShells } from "~/state/entities";
 import { useEnvironmentIdentities, useEnvironmentMachines } from "~/state/environments";
 import { offersLinkedEnvironmentsAtom } from "~/state/peerLinks";
@@ -66,7 +69,9 @@ export function useComposerMenuItems({
   planModeUiEnabled,
   compactSlashCommandAvailable,
   selectedProvider,
+  selectedProviderInstanceId,
   selectedProviderSkills,
+  selectedProviderPluginCatalog,
   selectedProviderSlashCommands,
   showSkillsInSlashMenu,
   questionAttachmentTarget,
@@ -82,7 +87,9 @@ export function useComposerMenuItems({
   readonly planModeUiEnabled: boolean;
   readonly compactSlashCommandAvailable: boolean;
   readonly selectedProvider: ProviderDriverKind;
+  readonly selectedProviderInstanceId?: ProviderInstanceId | undefined;
   readonly selectedProviderSkills: ServerProvider["skills"];
+  readonly selectedProviderPluginCatalog?: ServerProviderPluginCatalog | undefined;
   readonly selectedProviderSlashCommands: ServerProvider["slashCommands"];
   readonly showSkillsInSlashMenu: boolean;
   readonly questionAttachmentTarget: DraftId | null;
@@ -274,17 +281,36 @@ export function useComposerMenuItems({
       return searchSlashCommandItems(slashCommandItems, query);
     }
     if (composerTrigger.kind === "skill") {
-      return searchProviderSkills(selectedProviderSkills, composerTrigger.query).map((skill) => ({
-        id: `skill:${selectedProvider}:${skill.name}`,
-        type: "skill" as const,
-        provider: selectedProvider,
-        skill,
-        label: formatProviderSkillDisplayName(skill),
-        description:
-          skill.shortDescription ??
-          skill.description ??
-          (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
-      }));
+      const plugins: ComposerCommandItem[] =
+        selectedProvider === "codex"
+          ? searchProviderPlugins(
+              selectedProviderPluginCatalog?.plugins ?? [],
+              composerTrigger.query,
+            ).map((plugin) => ({
+              id: `plugin:${environmentId}:${selectedProviderInstanceId}:${plugin.id}`,
+              type: "plugin",
+              plugin,
+              label: plugin.name,
+              description: pluginMenuDescription(
+                plugin,
+                selectedProviderPluginCatalog?.plugins ?? [],
+              ),
+            }))
+          : [];
+      return [
+        ...plugins,
+        ...searchProviderSkills(selectedProviderSkills, composerTrigger.query).map((skill) => ({
+          id: `skill:${selectedProvider}:${skill.name}`,
+          type: "skill" as const,
+          provider: selectedProvider,
+          skill,
+          label: formatProviderSkillDisplayName(skill),
+          description:
+            skill.shortDescription ??
+            skill.description ??
+            (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+        })),
+      ];
     }
     if (
       composerTrigger.kind === "pull-request" &&
@@ -360,7 +386,9 @@ export function useComposerMenuItems({
         exactPullRequestLookup.isPending));
   const emptyState = (() => {
     if (composerTriggerKind === "skill") {
-      return "No skills found. Try / to browse provider commands.";
+      return selectedProvider === "codex"
+        ? "No plugins or skills found. Try / to browse provider commands."
+        : "No skills found. Try / to browse provider commands.";
     }
     if (composerTriggerKind === "pull-request") {
       if (pullRequestProjectId === null || pullRequestRepository === null) {
@@ -381,5 +409,11 @@ export function useComposerMenuItems({
       : "No matching command.";
   })();
 
-  return { items, isLoading, emptyState };
+  const notice =
+    composerTriggerKind === "skill" && selectedProvider === "codex"
+      ? selectedProviderPluginCatalog === undefined
+        ? "Plugin inventory is not available. Refresh the provider to load plugins."
+        : selectedProviderPluginCatalog.message
+      : undefined;
+  return { items, isLoading, emptyState, notice };
 }

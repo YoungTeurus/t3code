@@ -1,12 +1,14 @@
 import type { AssistantCitation } from "@t3tools/contracts";
 import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { collectPluginMentions } from "./providerPluginMentions";
 import {
   collectComposerInlineTokens,
   type ComposerInlineToken,
 } from "@t3tools/shared/composerInlineTokens";
 
 export type ComposerPromptSegment =
+  | { type: "plugin"; pluginId: string; label: string; source: string }
   | {
       type: "text";
       text: string;
@@ -79,10 +81,12 @@ export function collectComposerPromptInlineTokens(text: string) {
   const tokens = collectComposerInlineTokens(text);
   const citations = collectAssistantCitations(text);
   const references = collectComposerContextReferences(text);
-  if (citations.length === 0 && references.length === 0) return tokens;
+  const plugins = collectPluginMentions(text);
+  if (citations.length === 0 && references.length === 0 && plugins.length === 0) return tokens;
 
   // An unfinished @ mention can otherwise consume the start of a link label.
   const links = [
+    ...plugins,
     ...citations.map((match) => ({ ...match, type: "citation" as const })),
     ...references.map((match) => ({ ...match, type: "context-reference" as const })),
   ];
@@ -111,7 +115,14 @@ function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegmen
       pushTextSegment(segments, text.slice(cursor, match.start));
     }
 
-    if (match.type === "citation") {
+    if (match.type === "plugin") {
+      segments.push({
+        type: "plugin",
+        pluginId: match.value,
+        label: match.label,
+        source: match.source,
+      });
+    } else if (match.type === "citation") {
       segments.push({ type: "citation", citation: match.citation, source: match.source });
     } else if (match.type === "context-reference") {
       segments.push({

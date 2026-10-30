@@ -234,6 +234,7 @@ export interface SourceControlDefinition {
   readonly repositoryPathHint: string;
   readonly publicHost: string | null;
   readonly publishDescription: string;
+  readonly supportsRepositoryCreation?: boolean;
   readonly publishHost: (signedInHost: string | null) => string;
   readonly newRepositoryOwner: (account: string | null) => { readonly owner: string | null } | null;
   readonly defaultCloneTransport: "https" | "ssh";
@@ -683,7 +684,8 @@ export function makeSourceControlDefinitionRegistry(
     },
     repositoryKeyFromRemote: (remoteUrl) => {
       const key = normalizeGitRemoteUrl(remoteUrl);
-      if (parseGitRemoteRepository(remoteUrl) === null) return key;
+      if (parseGitRemoteRepository(remoteUrl) === null)
+        return repositoryKeyOwner(key)?.canonical ?? key;
       for (const definition of definitions) {
         const spelled = definition.repositoryKeyFromRemote?.(key);
         if (spelled != null) return spelled;

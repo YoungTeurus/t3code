@@ -26,7 +26,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
@@ -159,14 +159,25 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const withWorkspaceLease = yield* makeWorkspaceLease;
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
       function* (input: {
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
+        readonly exists: boolean;
       }) {
         const { cwd, worktreePath, branch } = input;
+        if (
+          yield* (
+            gitWorkflow.recoverWorktree?.({ cwd, path: worktreePath, branch }) ??
+              Effect.succeed(false)
+          )
+        )
+          return;
+        if (input.exists) return;
+        if (!(yield* isManagedWorktreePath(worktreePath))) return;
         yield* gitWorkflow.pruneWorktrees({ cwd });
         const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
         if (localBranchNames.includes(branch)) {
@@ -580,22 +591,24 @@ export const layer: Layer.Layer<
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
-        if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+        {
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
           );
           if (project !== undefined) {
-            yield* Effect.logWarning("provider turn start recreating missing worktree", {
-              threadId: projection.thread.id,
-              worktreePath,
-              branch,
-            });
+            if (!exists)
+              yield* Effect.logWarning("provider turn start recreating missing worktree", {
+                threadId: projection.thread.id,
+                worktreePath,
+                branch,
+              });
             const recreateResult = yield* Effect.result(
               recreateMissingWorktree({
                 cwd: project.workspaceRoot,
                 worktreePath,
                 branch,
+                exists,
               }).pipe(
                 Effect.mapError((cause) =>
                   cause._tag === "WorktreeRecreateNoBaseError"

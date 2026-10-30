@@ -11,6 +11,12 @@ import { vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsDriver from "../vcs/VcsDriver.ts";
+import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import { ChildProcessSpawner } from "effect/process";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 
@@ -94,6 +100,97 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   });
 
   describe("list", () => {
+    it.effect("classifies Arc children through the native driver", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(cwd, "tracked.txt");
+        yield* writeTextFile(cwd, ".env");
+        yield* writeTextFile(cwd, "ignored.txt", "secret marker");
+        yield* writeTextFile(cwd, ".arc/HEAD");
+        const driver = yield* VcsDriver.VcsDriver;
+        const entries = yield* WorkspaceEntries.make.pipe(
+          Effect.provide(
+            Layer.merge(
+              WorkspaceSearchIndex.WorkspaceSearchIndexMap.layer,
+              Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+                detect: () =>
+                  Effect.succeed({
+                    kind: "arc",
+                    repository: {
+                      kind: "arc",
+                      rootPath: cwd.slice(0, cwd.lastIndexOf("/")),
+                      metadataPath: `${cwd}/.arc`,
+                      freshness: {
+                        source: "live-local",
+                        observedAt: DateTime.makeUnsafe(0),
+                        expiresAt: Option.none(),
+                      },
+                    },
+                    driver,
+                  }),
+              }),
+            ),
+          ),
+        );
+        const result = yield* entries.list({ cwd, directoryPath: "" });
+        expect(result.entries).toEqual([
+          { path: ".env", kind: "file", ignored: true },
+          { path: "ignored.txt", kind: "file", ignored: true },
+          { path: "tracked.txt", kind: "file" },
+        ]);
+        expect((yield* entries.listIgnoredFiles({ cwd })).files).toEqual([
+          { path: ".env", byteLength: 0 },
+        ]);
+        expect((yield* entries.search({ cwd, query: "ignored", limit: 20 })).entries).toEqual([]);
+        expect(
+          (yield* entries.searchContents({
+            cwd,
+            query: "secret",
+            limit: 20,
+            caseSensitive: true,
+            wholeWord: false,
+            useRegex: false,
+          })).matches,
+        ).toEqual([]);
+      }).pipe(
+        Effect.provide(
+          Layer.mock(VcsDriver.VcsDriver)({
+            checkpoints: {
+              captureCheckpoint: () => Effect.die("unexpected checkpoint capture"),
+              hasCheckpointRef: () => Effect.die("unexpected checkpoint lookup"),
+              restoreCheckpoint: () => Effect.die("unexpected checkpoint restore"),
+              diffCheckpoints: () => Effect.die("unexpected checkpoint diff"),
+              listAuthoredPaths: () => Effect.die("unexpected authored paths lookup"),
+              deleteCheckpointRefs: () => Effect.die("unexpected checkpoint deletion"),
+            },
+            filterIgnoredPaths: (_cwd, paths) =>
+              Effect.succeed(paths.filter((path) => path !== ".env" && path !== "ignored.txt")),
+            execute: (input) => {
+              expect(input.args.slice(0, 5)).toEqual([
+                "status",
+                "--json",
+                "--ignored",
+                "-u",
+                "normal",
+              ]);
+              const scope = input.args.at(-1);
+              return Effect.succeed({
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: JSON.stringify({
+                  status: {
+                    ignored: [{ path: `${scope}/.env` }, { path: `${scope}/node_modules/` }],
+                  },
+                }),
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              });
+            },
+          }),
+        ),
+      ),
+    );
+
     it.effect("lists immediate children including ignored and empty directories", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTempDir({ git: true });

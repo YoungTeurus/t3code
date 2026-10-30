@@ -349,6 +349,7 @@ const layerRepositoryIdentityResolver = Layer.effect(
   Effect.gen(function* () {
     const registry = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
     return yield* RepositoryIdentityResolver.make({
+      resolveNative: yield* RepositoryIdentityResolver.makeNativeResolver,
       refine: Effect.fn(function* (identity: RepositoryIdentity) {
         for (const { kind } of BUILT_IN_SOURCE_CONTROL_DRIVER_LIST) {
           const provider = yield* registry.get(kind);
@@ -364,7 +365,10 @@ const layerRepositoryIdentityResolver = Layer.effect(
       }),
     });
   }),
-).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
+).pipe(
+  Layer.provide(Layer.merge(layerSourceControlProviderRegistry, layerVcsDriverRegistry)),
+  Layer.provide(ProcessRunner.layer),
+);
 
 const layerPullRequestService = PullRequestService.layer.pipe(
   Layer.provide(PullRequestProviderRegistry.layer),
@@ -426,6 +430,18 @@ const layerVcs = Layer.empty.pipe(
   Layer.provideMerge(layerProjectCloneTracker),
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
+      Layer.provide(
+        Layer.effect(
+          VcsStatusBroadcaster.VcsCheckoutIdentity,
+          Effect.gen(function* () {
+            const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+            return Effect.fn("VcsStatusBroadcaster.checkoutIdentity")(function* (cwd: string) {
+              const handle = yield* registry.detect({ cwd }).pipe(Effect.orElseSucceed(() => null));
+              return handle?.kind === "arc" ? `arc:${handle.repository.rootPath}` : cwd;
+            });
+          }),
+        ).pipe(Layer.provide(layerVcsDriverRegistry)),
+      ),
       Layer.provide(layerGitWorkflow),
       Layer.provide(VcsStatusBroadcaster.layerAutomaticFetchInterval),
       // The orchestration runtime also consumes the broadcaster (run
