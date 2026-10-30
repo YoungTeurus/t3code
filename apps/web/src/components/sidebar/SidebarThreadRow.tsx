@@ -365,10 +365,12 @@ function SidebarThreadTooltip({
   );
 }
 
-function SnoozeMenuButton(props: {
+export function SnoozeMenuButton(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSnooze: (preset: Pick<SnoozePreset, "snoozedUntil">) => void;
+  onSnoozeUntilThread: () => void;
+  snoozeDependencySupported: boolean;
   timestampFormat: TimestampFormat;
   environmentId: EnvironmentId;
 }) {
@@ -400,6 +402,16 @@ function SnoozeMenuButton(props: {
         <TooltipPopup>Snooze thread</TooltipPopup>
       </Tooltip>
       <MenuPopup side="bottom" align="end">
+        {props.snoozeDependencySupported ? (
+          <MenuItem
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onSnoozeUntilThread();
+            }}
+          >
+            Until another thread…
+          </MenuItem>
+        ) : null}
         {presets.map((preset) => (
           <MenuItem
             key={preset.id}
@@ -540,6 +552,7 @@ type SidebarThreadRowProps = {
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
+  snoozeDependencySupported: boolean;
   pinningSupported: boolean;
   isPinned: boolean;
   sortable?: SortableThreadRowBag | undefined;
@@ -581,6 +594,7 @@ type SidebarThreadRowProps = {
   ) => void;
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
+  onSnoozeUntilThread: (threadRef: ScopedThreadRef) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
@@ -1549,6 +1563,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           open={snoozeMenuOpen}
                           onOpenChange={setSnoozeMenuOpen}
                           onSnooze={handleSnoozePreset}
+                          onSnoozeUntilThread={() => props.onSnoozeUntilThread(threadRef)}
+                          snoozeDependencySupported={props.snoozeDependencySupported}
                           timestampFormat={props.timestampFormat}
                           environmentId={thread.environmentId}
                         />

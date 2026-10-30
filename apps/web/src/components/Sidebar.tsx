@@ -2193,6 +2193,30 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     })();
   };
 
+  const attemptSnoozeUntilThread = (threadRef: ScopedThreadRef) => {
+    void (async () => {
+      const thread = readThreadShell(threadRef);
+      if (!thread || !checkThreadOperations([thread])) return;
+      const choice = await requestSnoozeUntilThread(
+        threadRef.environmentId,
+        threadRef.threadId,
+        thread.snoozeDependency ?? null,
+      );
+      if (!choice) return;
+      const result = await snoozeUntilThread(threadRef, choice);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to snooze thread",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    })();
+  };
+
   const handleMultiSelectContextMenu = useStableCallback(
     async (position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -3258,6 +3282,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             }
                             settlementSupported={serverConfigs.has(thread.environmentId)}
                             snoozeSupported={serverConfigs.has(thread.environmentId)}
+                            snoozeDependencySupported={
+                              serverConfigs.get(thread.environmentId)?.environment.capabilities
+                                .threadSnoozeDependency === true
+                            }
                             pinningSupported={serverConfigs.has(thread.environmentId)}
                             isPinned={thread.pinnedAt != null}
                             dropVerb={
@@ -3325,6 +3353,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             onActionSweepStart={startActionSweep}
                             onUnsettle={attemptUnsettle}
                             onSnooze={attemptSnooze}
+                            onSnoozeUntilThread={attemptSnoozeUntilThread}
                             onUnsnooze={attemptUnsnooze}
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
