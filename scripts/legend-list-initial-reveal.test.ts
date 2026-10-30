@@ -147,3 +147,48 @@ describe.each(["react-native.js", "react-native.mjs"])(
     });
   },
 );
+
+describe.each([
+  "react.js",
+  "react.mjs",
+  "react-native.js",
+  "react-native.mjs",
+  "react-native.web.js",
+  "react-native.web.mjs",
+])("bootstrap reveal fallback (%s)", (bundle) => {
+  it("uses the current measured target when its bootstrap estimate is stale", () => {
+    const source = NodeFS.readFileSync(
+      new URL(`../apps/mobile/node_modules/@legendapp/list/${bundle}`, import.meta.url),
+      "utf8",
+    );
+    const abortStart = source.indexOf("function abortBootstrapInitialScroll(");
+    const abortSource = source.slice(abortStart, source.indexOf("\n// src/", abortStart));
+    const target = { index: 11, viewPosition: 1 };
+    const ctx = {
+      state: {
+        initialScroll: target,
+        refScroller: { current: {} },
+      },
+    };
+    const dispatch = vi.fn();
+    const resolveOffset = vi.fn(() => 2074);
+    const abort = NodeVM.runInNewContext(`${abortSource}\nabortBootstrapInitialScroll`, {
+      getBootstrapInitialScrollSession: () => ({ scroll: 0 }),
+      isOffsetInitialScrollSession: () => false,
+      clearBootstrapInitialScrollSession: vi.fn(),
+      resolveInitialScrollOffset: resolveOffset,
+      dispatchInitialScroll: dispatch,
+      Platform: { OS: "web" },
+    }) as (context: typeof ctx) => void;
+
+    abort(ctx);
+
+    expect(resolveOffset).toHaveBeenCalledWith(ctx, target);
+    expect(dispatch).toHaveBeenCalledWith(ctx, {
+      forceScroll: true,
+      resolvedOffset: 2074,
+      target,
+      waitForCompletionFrame: true,
+    });
+  });
+});

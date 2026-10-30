@@ -3452,7 +3452,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const sdk = yield* Effect.promise(() =>
           vi.importActual<typeof ClaudeSdk>("@anthropic-ai/claude-agent-sdk"),
         );
-        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation(sdk.resolveSettings);
+        // A nonempty remote tier prevents the host's MDM policy from becoming this test's policy.
+        vi.mocked(ClaudeSdk.resolveSettings).mockImplementation((options) =>
+          sdk.resolveSettings({
+            ...options,
+            serverManagedSettings: { model: "test-model", ...options?.serverManagedSettings },
+          }),
+        );
         const openWith = (launchArgs: string) =>
           Effect.scoped(
             Effect.gen(function* () {

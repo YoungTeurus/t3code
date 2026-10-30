@@ -288,7 +288,7 @@ describe("sourceControlClients repository keys", () => {
       "t3tools.visualstudio.com/defaultcollection/platform/_git/t3code",
     ],
     ["git@ssh.dev.azure.com:v3/o/p", "ssh.dev.azure.com/v3/o/p"],
-    ["ssh.dev.azure.com/v3/o/p/r", "ssh.dev.azure.com/v3/o/p/r"],
+    ["ssh.dev.azure.com/v3/o/p/r", "dev.azure.com/o/p/_git/r"],
     ["C:/repos/project", "c:/repos/project"],
   ])("keys %s as %s", (remote, key) => {
     expect(sourceControlClients.repositoryKeyFromRemote(remote)).toBe(key);

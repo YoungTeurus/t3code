@@ -269,7 +269,7 @@ index ce1fe00001c9e5aee6c6ea8bb2d4757d4586d002..ca6e596aa53327a097a388ffd545a4c6
       * Number of columns to render items in.
       * @default 1
 diff --git a/react-native.js b/react-native.js
-index b3c5a306b293f797a8b338adfca3060c0f6db22b..d7f59b63cd4982dfc9c347732caa77e0974864df 100644
+index b3c5a306b293f797a8b338adfca3060c0f6db22b..b167571d150bdf27197ee25ce482827dad7986ad 100644
 --- a/react-native.js
 +++ b/react-native.js
 @@ -717,6 +717,15 @@ function hasActiveInitialScroll(state) {
@@ -652,6 +652,15 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..d7f59b63cd4982dfc9c347732caa77e0
      if (!shouldKeepEndTargetAlive) {
        if (shouldPreserveInitialScrollForFooterLayout(initialScroll)) {
          clearPendingInitialScrollFooterLayout(ctx, {
+@@ -3026,7 +3232,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -4672,7 +4878,8 @@ function maybeUpdateAnchoredEndSpace(ctx) {
        contentBelowAnchor = Math.max(0, contentBelowAnchor - ctx.scrollAxisGap);
        contentBelowAnchor += (ctx.values.get("footerSize") || 0) + getStylePaddingEnd(state.props);
@@ -909,7 +918,7 @@ index b3c5a306b293f797a8b338adfca3060c0f6db22b..d7f59b63cd4982dfc9c347732caa77e0
        recycleItems,
        refreshControl: refreshControlElement ? stylePaddingTopState > 0 ? React2__namespace.cloneElement(refreshControlElement, {
 diff --git a/react-native.mjs b/react-native.mjs
-index 40e87cda8c9bc79a889e5542f29af429a24b24d4..c2ca39bab6ea1ebaaed25190a01e8cf2e395ece9 100644
+index 40e87cda8c9bc79a889e5542f29af429a24b24d4..1e8b5a72459546308537c54bfa69b2335ae44812 100644
 --- a/react-native.mjs
 +++ b/react-native.mjs
 @@ -696,6 +696,15 @@ function hasActiveInitialScroll(state) {
@@ -1292,6 +1301,15 @@ index 40e87cda8c9bc79a889e5542f29af429a24b24d4..c2ca39bab6ea1ebaaed25190a01e8cf2
      if (!shouldKeepEndTargetAlive) {
        if (shouldPreserveInitialScrollForFooterLayout(initialScroll)) {
          clearPendingInitialScrollFooterLayout(ctx, {
+@@ -3005,7 +3211,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -4651,7 +4857,8 @@ function maybeUpdateAnchoredEndSpace(ctx) {
        contentBelowAnchor = Math.max(0, contentBelowAnchor - ctx.scrollAxisGap);
        contentBelowAnchor += (ctx.values.get("footerSize") || 0) + getStylePaddingEnd(state.props);
@@ -1549,9 +1567,18 @@ index 40e87cda8c9bc79a889e5542f29af429a24b24d4..c2ca39bab6ea1ebaaed25190a01e8cf2
        recycleItems,
        refreshControl: refreshControlElement ? stylePaddingTopState > 0 ? React2.cloneElement(refreshControlElement, {
 diff --git a/react-native.web.js b/react-native.web.js
-index 914d2dafaafa001c9ab6791a0a0581659295e333..8b88b09d1269acef77c6ce0f8aaa1049d4fa26e9 100644
+index 914d2dafaafa001c9ab6791a0a0581659295e333..67f9b24017cd3005ef6604ac950cd8ad977d2a35 100644
 --- a/react-native.web.js
 +++ b/react-native.web.js
+@@ -2869,7 +2869,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -5651,6 +5651,18 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
@@ -1584,9 +1611,18 @@ index 914d2dafaafa001c9ab6791a0a0581659295e333..8b88b09d1269acef77c6ce0f8aaa1049
      }
    }
 diff --git a/react-native.web.mjs b/react-native.web.mjs
-index 95465f2ab89ce41a10553f58af83618f7310e83c..d7cbe1cb43449cc29822b2646deabbddd67f1e7d 100644
+index 95465f2ab89ce41a10553f58af83618f7310e83c..ba464a92243188bb172d31798d469a710217b542 100644
 --- a/react-native.web.mjs
 +++ b/react-native.web.mjs
+@@ -2848,7 +2848,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -5630,6 +5630,18 @@ var ContainerSlot = typedMemo(function ContainerSlot2(props) {
  });
  
@@ -1619,7 +1655,7 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..d7cbe1cb43449cc29822b2646deabbdd
      }
    }
 diff --git a/react.js b/react.js
-index 914d2dafaafa001c9ab6791a0a0581659295e333..8c320b0dfb3ea60ef145274b37b1297b7dee26dc 100644
+index 914d2dafaafa001c9ab6791a0a0581659295e333..574faf647bbed760888eefec1a56ecf943cefd5c 100644
 --- a/react.js
 +++ b/react.js
 @@ -1908,6 +1908,10 @@ function updateScroll(ctx, newScroll, forceUpdate, options) {
@@ -1633,6 +1669,15 @@ index 914d2dafaafa001c9ab6791a0a0581659295e333..8c320b0dfb3ea60ef145274b37b1297b
    const allowedEdge = isUserScrollEvent ? beginReachedEdgeUserScroll(ctx, newScroll - prevScroll) : void 0;
    const didResolvePendingNativeMVCPAdjust = resolvePendingNativeMVCPAdjust(ctx, newScroll);
    const scrollLength = state.scrollLength;
+@@ -2869,7 +2873,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -3257,6 +3261,7 @@ function syncMountedContainer(ctx, containerIndex, itemIndex, options) {
    const itemKey = (_a3 = state.idCache[itemIndex]) != null ? _a3 : getId(state, itemIndex);
    const updateLayout = (_b = options == null ? void 0 : options.updateLayout) != null ? _b : true;
@@ -1903,7 +1948,7 @@ index 914d2dafaafa001c9ab6791a0a0581659295e333..8c320b0dfb3ea60ef145274b37b1297b
              scrollBy();
              if (resetPaddingRafRef.current !== void 0) {
 diff --git a/react.mjs b/react.mjs
-index 95465f2ab89ce41a10553f58af83618f7310e83c..252a9d5b23e271c089d30c357a78dff754f1c899 100644
+index 95465f2ab89ce41a10553f58af83618f7310e83c..e6f47227f496b3a12aef7c318f8a1eb996f9f001 100644
 --- a/react.mjs
 +++ b/react.mjs
 @@ -1887,6 +1887,10 @@ function updateScroll(ctx, newScroll, forceUpdate, options) {
@@ -1917,6 +1962,15 @@ index 95465f2ab89ce41a10553f58af83618f7310e83c..252a9d5b23e271c089d30c357a78dff7
    const allowedEdge = isUserScrollEvent ? beginReachedEdgeUserScroll(ctx, newScroll - prevScroll) : void 0;
    const didResolvePendingNativeMVCPAdjust = resolvePendingNativeMVCPAdjust(ctx, newScroll);
    const scrollLength = state.scrollLength;
+@@ -2848,7 +2852,7 @@ function abortBootstrapInitialScroll(ctx) {
+     clearBootstrapInitialScrollSession(state);
+     dispatchInitialScroll(ctx, {
+       forceScroll: true,
+-      resolvedOffset: bootstrapInitialScroll.scroll,
++      resolvedOffset: resolveInitialScrollOffset(ctx, initialScroll),
+       target: initialScroll,
+       waitForCompletionFrame: Platform.OS === "web"
+     });
 @@ -3236,6 +3240,7 @@ function syncMountedContainer(ctx, containerIndex, itemIndex, options) {
    const itemKey = (_a3 = state.idCache[itemIndex]) != null ? _a3 : getId(state, itemIndex);
    const updateLayout = (_b = options == null ? void 0 : options.updateLayout) != null ? _b : true;
