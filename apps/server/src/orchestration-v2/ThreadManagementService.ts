@@ -876,10 +876,20 @@ const make = Effect.gen(function* () {
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    const acceptedScheduledQueueEntry =
+      input.scheduledTaskId !== undefined &&
+      dispatched.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.created" &&
+          event.payload.id === run?.id &&
+          event.payload.status === "queued",
+      );
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (turnItem === null &&
+        run.status !== "queued" &&
+        !(run.status === "cancelled" && acceptedScheduledQueueEntry))
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
