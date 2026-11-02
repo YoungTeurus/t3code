@@ -223,6 +223,18 @@ you had typed in the composer before starting the edit is restored afterwards. I
 message starts or is removed while you are editing, the edit ends: changed content moves into the
 composer when it is empty, and is discarded otherwise.
 
+### Scheduled message limits
+
+In **Settings → Scheduled tasks**, limit waiting messages from each task (default **1**)
+and from all tasks in one chat (default **3**). Leave a limit empty for unlimited messages.
+These settings belong to the selected environment and also apply to webhook and Run now launches.
+
+When full, the queue removes the oldest scheduled messages and puts the fresh message at the end.
+Choose **Skip new** to keep the waiting messages instead. Manual messages and running requests
+are preserved. Changing a setting leaves the current queue alone; the next scheduled arrival
+applies the limits. The queue shows how many scheduled runs were skipped until all waiting
+messages have left the queue. This count survives an app restart.
+
 ## Commands and skills
 
 Type `/` for commands or `$` to add a skill from the selected environment and

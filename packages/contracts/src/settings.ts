@@ -1225,7 +1225,17 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+const ScheduledQueueLimit = Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0)));
+const ScheduledQueueOverflow = Schema.Literals(["replace_oldest", "skip_new"]);
+
 export const ServerSettings = Schema.Struct({
+  scheduledTaskQueueLimit: ScheduledQueueLimit.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
+  scheduledThreadQueueLimit: ScheduledQueueLimit.pipe(
+    Schema.withDecodingDefault(Effect.succeed(3)),
+  ),
+  scheduledQueueOverflow: ScheduledQueueOverflow.pipe(
+    Schema.withDecodingDefault(Effect.succeed("replace_oldest" as const)),
+  ),
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
@@ -1565,6 +1575,9 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  scheduledTaskQueueLimit: Schema.optionalKey(ScheduledQueueLimit),
+  scheduledThreadQueueLimit: Schema.optionalKey(ScheduledQueueLimit),
+  scheduledQueueOverflow: Schema.optionalKey(ScheduledQueueOverflow),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

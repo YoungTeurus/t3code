@@ -913,6 +913,9 @@ export const layer = Layer.effect(
                 // The stored selection only seeds fresh threads. A bound run
                 // follows the thread's current provider, so it passes none.
                 sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                  Effect.catchTags({
+                    ThreadManagementScheduledMessageSkippedError: () => Effect.succeed(null),
+                  }),
                   Effect.as(ThreadId.make(active.threadId)),
                 ),
               );

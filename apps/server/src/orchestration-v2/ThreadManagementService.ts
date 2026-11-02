@@ -294,6 +294,15 @@ export class ThreadManagementProjectThreadsListError extends Schema.TaggedError<
   }
 }
 
+export class ThreadManagementScheduledMessageSkippedError extends Schema.TaggedError<ThreadManagementScheduledMessageSkippedError>()(
+  "ThreadManagementScheduledMessageSkippedError",
+  { threadId: ThreadId, messageId: MessageId },
+) {
+  override get message(): string {
+    return "The scheduled message was skipped because its queue limit was reached.";
+  }
+}
+
 export class ThreadManagementDurableRunProjectionError extends Schema.TaggedError<ThreadManagementDurableRunProjectionError>()(
   "ThreadManagementDurableRunProjectionError",
   {
@@ -347,6 +356,7 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementProjectionLoadError,
   ThreadManagementProjectThreadsListError,
   ThreadManagementDurableRunProjectionError,
+  ThreadManagementScheduledMessageSkippedError,
   ThreadManagementProviderInstanceDisabledError,
 ]);
 export type ThreadManagementError = typeof ThreadManagementError.Type;
@@ -841,6 +851,20 @@ const make = Effect.gen(function* () {
       turnItemTypes: ["user_message"],
     });
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
+    if (
+      input.scheduledTaskId !== undefined &&
+      message === undefined &&
+      dispatched.storedEvents.some(
+        ({ event }) =>
+          event.type === "thread.metadata-updated" &&
+          (event.payload.scheduledQueueSkippedCount ?? 0) > 0,
+      )
+    ) {
+      return yield* new ThreadManagementScheduledMessageSkippedError({
+        threadId: input.threadId,
+        messageId: input.messageId,
+      });
+    }
     const run =
       message?.runId === null || message?.runId === undefined
         ? undefined

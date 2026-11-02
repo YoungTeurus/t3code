@@ -235,6 +235,11 @@ export function QueuedRunsControl({
       <span className="sr-only" aria-live="polite">
         {items.length} queued
       </span>
+      {(workflow?.scheduledQueueSkippedCount ?? 0) > 0 ? (
+        <p className="text-right text-xs text-muted-foreground" role="status">
+          Scheduled runs skipped: {workflow?.scheduledQueueSkippedCount}
+        </p>
+      ) : null}
       <ol className="flex flex-col items-end gap-3" id={queueListId}>
         {visibleItems.map((item, position) => {
           const previewText = assistantCitationsToPlainText(

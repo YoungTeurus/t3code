@@ -210,6 +210,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      {(workflow?.scheduledQueueSkippedCount ?? 0) > 0 ? (
+        <Text className="py-3 text-sm text-foreground-muted" accessibilityRole="text">
+          Scheduled runs skipped: {workflow?.scheduledQueueSkippedCount}
+        </Text>
+      ) : null}
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue paused</Text>

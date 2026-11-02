@@ -500,6 +500,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   snoozeDependency: Schema.optional(Schema.NullOr(ThreadSnoozeDependency)),
   snoozeDependencyWake: Schema.optional(Schema.NullOr(ThreadSnoozeDependencyWake)),
   triggerWait: Schema.optional(Schema.NullOr(ThreadTriggerWait)),
+  scheduledQueueSkippedCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   lastSnoozeWakeAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecovery)),
   guestShare: Schema.optional(Schema.NullOr(ThreadGuestShare)),

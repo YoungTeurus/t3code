@@ -2,6 +2,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
+  DEFAULT_SERVER_SETTINGS,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
@@ -1320,6 +1321,7 @@ function EnvironmentTasks({
         />
       }
     >
+      <ScheduledQueueSettings environmentId={environmentId} />
       {tasks.error ? (
         <Text className="p-4 text-base text-danger-foreground">{tasks.error}</Text>
       ) : !tasks.data ? (
@@ -1415,5 +1417,77 @@ function EnvironmentTasks({
         ))
       )}
     </SettingsSection>
+  );
+}
+
+function ScheduledQueueSettings({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const settings =
+    useAtomValue(serverEnvironment.settingsValueAtom(environmentId)) ?? DEFAULT_SERVER_SETTINGS;
+  const canWrite = useAtomValue(serverEnvironment.updateSettings.permissionAtom(environmentId));
+  const update = useAtomCommand(
+    serverEnvironment.updateSettings,
+    "scheduled queue settings update",
+  );
+  return (
+    <>
+      {(
+        [
+          ["scheduledTaskQueueLimit", "Queued messages per task"],
+          ["scheduledThreadQueueLimit", "Scheduled messages per chat"],
+        ] as const
+      ).map(([key, title]) => (
+        <View key={key} className="gap-2 border-t border-border-subtle px-4 py-3">
+          <Text className="text-sm text-foreground-muted">{title}</Text>
+          <RNTextInput
+            key={settings[key] ?? "unlimited"}
+            accessibilityLabel={title}
+            defaultValue={settings[key]?.toString() ?? ""}
+            readOnly={!canWrite}
+            keyboardType="number-pad"
+            placeholder="Unlimited"
+            placeholderTextColorClassName="accent-foreground-muted"
+            className="min-h-8 font-sans text-base text-foreground"
+            onEndEditing={(event) => {
+              const raw = event.nativeEvent.text.trim();
+              const value = raw === "" ? null : Number(raw);
+              if (
+                (value === null || (Number.isSafeInteger(value) && value > 0)) &&
+                value !== settings[key]
+              ) {
+                void update({ environmentId, input: { patch: { [key]: value } } });
+              }
+            }}
+          />
+        </View>
+      ))}
+      <SelectRow
+        label="When the queue is full"
+        value={settings.scheduledQueueOverflow === "replace_oldest" ? "Remove oldest" : "Skip new"}
+        borderTop
+        actions={
+          canWrite
+            ? [
+                {
+                  id: "replace_oldest",
+                  title: "Remove oldest",
+                  state: settings.scheduledQueueOverflow === "replace_oldest" ? "on" : "off",
+                },
+                {
+                  id: "skip_new",
+                  title: "Skip new",
+                  state: settings.scheduledQueueOverflow === "skip_new" ? "on" : "off",
+                },
+              ]
+            : []
+        }
+        onSelect={(value) => {
+          if (value === "replace_oldest" || value === "skip_new")
+            void update({ environmentId, input: { patch: { scheduledQueueOverflow: value } } });
+        }}
+      />
+      <Text className="px-4 py-3 text-sm text-foreground-muted">
+        Waiting messages only. Empty means unlimited. Limits apply on the next scheduled arrival.
+      </Text>
+    </>
   );
 }

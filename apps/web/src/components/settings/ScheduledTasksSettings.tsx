@@ -45,7 +45,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import { formatRelativeTime } from "../../timestampFormat";
-import { useEnvironmentSettings } from "../../hooks/useSettings";
+import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { usePrimaryCloudLinkState } from "../../cloud/primaryCloudLinkState";
@@ -657,6 +657,7 @@ function ScheduledTaskEnvironmentSection({
         <SettingsRow title="Loading scheduled tasks…" role="status" />
       ) : (
         <>
+          <ScheduledQueueSettings environmentId={environment.environmentId} />
           {taskId && !linkedTask ? (
             <SettingsRow
               title="Task unavailable"
@@ -1788,5 +1789,66 @@ function ScheduledTaskEditorForm({
         </Button>
       </DialogFooter>
     </>
+  );
+}
+
+function ScheduledQueueSettings({ environmentId }: { readonly environmentId: EnvironmentId }) {
+  const settings = useEnvironmentSettings(environmentId);
+  const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const canWrite = useAtomValue(serverEnvironment.updateSettings.permissionAtom(environmentId));
+  return (
+    <SettingsGroup>
+      {(
+        [
+          ["scheduledTaskQueueLimit", "Queued messages per task"],
+          ["scheduledThreadQueueLimit", "Scheduled messages per chat"],
+        ] as const
+      ).map(([key, title]) => (
+        <SettingsRow
+          key={key}
+          title={title}
+          description="Waiting messages only. Leave empty for no limit."
+        >
+          <Input
+            key={settings[key] ?? "unlimited"}
+            aria-label={title}
+            type="number"
+            min={1}
+            step={1}
+            placeholder="Unlimited"
+            defaultValue={settings[key] ?? ""}
+            disabled={!canWrite}
+            onBlur={(event) => {
+              const raw = event.currentTarget.value.trim();
+              const value = raw === "" ? null : Number(raw);
+              if (value === null || (Number.isSafeInteger(value) && value > 0)) {
+                if (value !== settings[key]) updateSettings({ [key]: value });
+              } else event.currentTarget.value = settings[key]?.toString() ?? "";
+            }}
+          />
+        </SettingsRow>
+      ))}
+      <SettingsRow
+        title="When the queue is full"
+        description="Applies to all tasks on this environment. Existing messages are checked on the next scheduled arrival."
+      >
+        <Select
+          value={settings.scheduledQueueOverflow}
+          disabled={!canWrite}
+          onValueChange={(value) => {
+            if (value === "replace_oldest" || value === "skip_new")
+              updateSettings({ scheduledQueueOverflow: value });
+          }}
+        >
+          <SelectTrigger aria-label="When the queue is full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectItem value="replace_oldest">Remove oldest</SelectItem>
+            <SelectItem value="skip_new">Skip new</SelectItem>
+          </SelectPopup>
+        </Select>
+      </SettingsRow>
+    </SettingsGroup>
   );
 }

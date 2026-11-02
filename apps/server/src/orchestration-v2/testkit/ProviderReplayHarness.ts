@@ -197,6 +197,7 @@ export function runOrchestratorV2ProviderReplayScenario<
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   } = {},
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
@@ -239,6 +240,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
     readonly replayGate?: ProviderReplayGate;
   } = {},
 ): Layer.Layer<
@@ -272,6 +274,7 @@ export function layerWithRegistry<Error>(
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -300,6 +303,7 @@ export function layerWithRegistry<Error>(
   );
   const layerServerSettings = ServerSettings.layerTest({
     responseStreamingMode: "turn",
+    ...options.serverSettings,
     ...(options.continueThreadsAfterServerUpdate === undefined
       ? {}
       : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),

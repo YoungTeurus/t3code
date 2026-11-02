@@ -1,3 +1,4 @@
+import { scheduledQueueAdmission } from "./ScheduledQueueAdmission.ts";
 import type {
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -1243,6 +1244,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } as Event;
     });
 
+  const resetEmptyScheduledQueueCounters = Effect.fn(
+    "Orchestrator.resetEmptyScheduledQueueCounters",
+  )(function* (events: ReadonlyArray<OrchestrationV2DomainEvent>) {
+    const result = [...events];
+    const threadIds = new Set(
+      events.flatMap((event) =>
+        event.type === "run.updated" && event.payload.status !== "queued" ? [event.threadId] : [],
+      ),
+    );
+    for (const threadId of threadIds) {
+      let thread = yield* projectionStore
+        .getThread(threadId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      for (const event of events) {
+        if (
+          event.threadId === threadId &&
+          event.type.startsWith("thread.") &&
+          "lineage" in event.payload
+        )
+          thread = event.payload;
+      }
+      if ((thread.scheduledQueueSkippedCount ?? 0) === 0) continue;
+      const stored = yield* projectionStore
+        .getThreadRecords(threadId, ["runs"])
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      const queued = new Set(
+        stored.runs.filter((run) => run.status === "queued").map((run) => run.id),
+      );
+      for (const event of events) {
+        if (event.threadId !== threadId) continue;
+        if (event.type === "run.created" || event.type === "run.updated") {
+          if (event.payload.status === "queued") queued.add(event.payload.id);
+          else queued.delete(event.payload.id);
+        }
+      }
+      if ((thread.scheduledQueueSkippedCount ?? 0) > 0 && queued.size === 0) {
+        result.push(
+          yield* makeSystemEvent({
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...thread, scheduledQueueSkippedCount: 0 },
+          }).pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
+        );
+      }
+    }
+    return result;
+  });
+
   const writeSystemEvents =
     /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
     Effect.fnUntraced(function* (
@@ -1251,7 +1301,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
-      yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
+      yield* eventSink.writeWithEffects({
+        events: yield* resetEmptyScheduledQueueCounters(withIds),
+        effects,
+        ...options,
+      });
     });
 
   const completionDeliveryRun = (
@@ -5828,6 +5882,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           capabilities: queuedCapabilities,
         }),
       );
+      if (command.scheduledTaskId !== undefined) {
+        const settings = yield* serverSettings.getSettings.pipe(mapDispatchError(command));
+        const admission = scheduledQueueAdmission(projection, command.scheduledTaskId, settings);
+        for (const runId of admission.cancelRunIds) {
+          yield* dispatchQueuedRunCancel(
+            {
+              type: "queued-run.cancel",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              runId,
+            },
+            events,
+          );
+        }
+        const skipped = admission.skip ? 1 : admission.cancelRunIds.length;
+        if (skipped > 0) {
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.metadata-updated",
+            threadId: command.threadId,
+            occurredAt: now,
+            payload: {
+              ...projection.thread,
+              scheduledQueueSkippedCount:
+                (projection.thread.scheduledQueueSkippedCount ?? 0) + skipped,
+            },
+          });
+        }
+        if (admission.skip) return;
+      }
       const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
         id: idAllocator.derive.providerThread({
           driver: queuedAdapter.driver,
@@ -13077,7 +13163,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* dispatchUnsupported(command);
     }
     return {
-      events: yield* Ref.get(events),
+      events: yield* resetEmptyScheduledQueueCounters(yield* Ref.get(events)),
       effects: yield* Ref.get(effects),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
       ...(updateDelegatedCompletionOnlyRunId === undefined
