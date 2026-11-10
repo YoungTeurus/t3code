@@ -1,6 +1,7 @@
 import * as NodeBuffer from "node:buffer";
 
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -29,7 +30,8 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
   const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const error = (cwd: string, operation: string, cause?: unknown) =>
     new GitCommandError({
       cwd,
@@ -160,7 +162,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     const hash = yield* io(
       cwd,
       "metadataHash",
-      crypto.digest("SHA-256", NodeBuffer.Buffer.from(`${ctx.root}\0${branch}`)),
+      crypto.digest(Digest.sha256, NodeBuffer.Buffer.from(`${ctx.root}\0${branch}`)),
     );
     return path.join(
       config.stateDir,
@@ -192,7 +194,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
       "baseDirectory",
       fs.makeDirectory(path.dirname(file), { recursive: true, mode: 0o700 }),
     );
-    const temp = `${file}.${yield* io(cwd, "uuid", crypto.randomUUIDv4())}.tmp`;
+    const temp = `${file}.${yield* io(cwd, "uuid", secureRandom.uuidV4())}.tmp`;
     const text = yield* io(cwd, "encodeBase", encodeBase({ branch, base }));
     yield* io(cwd, "writeBase", fs.writeFileString(temp, text, { flag: "wx", mode: 0o600 }));
     yield* io(cwd, "publishBase", fs.rename(temp, file)).pipe(

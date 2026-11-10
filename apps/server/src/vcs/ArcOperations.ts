@@ -1,7 +1,7 @@
 import * as NodeBuffer from "node:buffer";
 
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -89,14 +89,14 @@ const make = Effect.gen(function* () {
   const cli = yield* ArcCli.ArcCli;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
 
   const failure = (cwd: string, operation: string, cause: unknown) =>
     new VcsProcessOutputReadError({ cwd, operation, command: "arc", stream: "stdout", cause });
 
   const hashPatch = Effect.fn("ArcOperations.hashPatch")(function* (cwd: string, patch: string) {
     const bytes = yield* crypto
-      .digest("SHA-256", Buffer.from(patch))
+      .digest(Digest.sha256, Buffer.from(patch))
       .pipe(Effect.mapError((cause) => failure(cwd, "ArcOperations.hashPatch", cause)));
     return Buffer.from(bytes).toString("hex");
   });

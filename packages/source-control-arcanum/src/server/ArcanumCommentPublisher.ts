@@ -1,5 +1,6 @@
 import * as Path from "effect/Path";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Hex from "effect/encoding/Hex";
@@ -31,7 +32,8 @@ export const makeArcanumCommentPublisher = Effect.fn("ArcanumCommentPublisher.ma
   const api = yield* ArcanumApi.ArcanumApi;
   const host = yield* SourceControlHost.SourceControlHost;
   const fs = yield* FileSystem.FileSystem;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const path = yield* Path.Path;
   const permit = yield* Semaphore.make(1);
   const error = (operation: string) =>
@@ -39,7 +41,7 @@ export const makeArcanumCommentPublisher = Effect.fn("ArcanumCommentPublisher.ma
   const io = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError(() => error(operation)));
   const digest = Effect.fn("ArcanumCommentPublisher.digest")(function* (value: string) {
-    return yield* crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
+    return yield* crypto.digest(Digest.sha256, new TextEncoder().encode(value)).pipe(
       Effect.map(Hex.encode),
       Effect.mapError(() => error("commentDigest")),
     );
@@ -86,7 +88,7 @@ export const makeArcanumCommentPublisher = Effect.fn("ArcanumCommentPublisher.ma
           );
           const file = path.join(directory, `${identity}.json`);
           if (!(yield* io("commentIntentExists", fs.exists(file)))) {
-            const key = yield* io("commentIdempotencyKey", crypto.randomUUIDv4());
+            const key = yield* io("commentIdempotencyKey", secureRandom.uuidV4());
             const temporary = yield* io(
               "commentIntentTemporary",
               fs.makeTempFileScoped({ directory, prefix: ".intent-" }),

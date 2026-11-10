@@ -1,5 +1,5 @@
 import * as NodeBuffer from "node:buffer";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -94,7 +94,7 @@ export const make = Effect.gen(function* () {
   const api = yield* ArcanumApi.ArcanumApi;
   const host = yield* SourceControlHost.SourceControlHost;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const publisher = yield* makeArcanumCommentPublisher();
   const error = (
     operation: string,
@@ -898,7 +898,7 @@ export const make = Effect.gen(function* () {
         const text = yield* io("fingerprint", encodeFingerprint(value));
         return yield* io(
           "fingerprint",
-          crypto.digest("SHA-256", new TextEncoder().encode(text)),
+          crypto.digest(Digest.sha256, new TextEncoder().encode(text)),
         ).pipe(Effect.map(Hex.encode));
       });
       return {

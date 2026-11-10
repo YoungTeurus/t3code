@@ -8,6 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
 import RemoveRedundantProjectionIndexes from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
+import ThreadSnoozeDependencies from "./Migrations/081_ThreadSnoozeDependencies.ts";
+import RemoteApprovalAttention from "./Migrations/082_RemoteApprovalAttention.ts";
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
 
 const seedPreview = Effect.gen(function* () {
@@ -53,8 +55,15 @@ describe("V2 preview upgrade", () => {
         [71, "PeerLinkFence"],
         [72, "WaitingLinkRequestIndex"],
         [73, "ActiveTurnItemIndexes"],
-        [74, "ThreadSnoozeDependencies"],
-        [75, "RemoteApprovalAttention"],
+        [74, "ExcludeAttachmentPlaceholdersFromSearch"],
+        [75, "SubagentDeliveryState"],
+        [76, "ProjectionProjectsPinArchive"],
+        [77, "RepairBooleanSettledOverride"],
+        [78, "DropOrchestrationEventCorrelationIndex"],
+        [79, "DelegatedRecoveryIndexes"],
+        [80, "ScheduledTaskThreadMode"],
+        [81, "ThreadSnoozeDependencies"],
+        [82, "RemoteApprovalAttention"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -151,8 +160,15 @@ describe("V2 preview upgrade", () => {
         [71, "PeerLinkFence"],
         [72, "WaitingLinkRequestIndex"],
         [73, "ActiveTurnItemIndexes"],
-        [74, "ThreadSnoozeDependencies"],
-        [75, "RemoteApprovalAttention"],
+        [74, "ExcludeAttachmentPlaceholdersFromSearch"],
+        [75, "SubagentDeliveryState"],
+        [76, "ProjectionProjectsPinArchive"],
+        [77, "RepairBooleanSettledOverride"],
+        [78, "DropOrchestrationEventCorrelationIndex"],
+        [79, "DelegatedRecoveryIndexes"],
+        [80, "ScheduledTaskThreadMode"],
+        [81, "ThreadSnoozeDependencies"],
+        [82, "RemoteApprovalAttention"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -171,3 +187,41 @@ describe("V2 preview upgrade", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
+
+it.effect(
+  "upgrades the fork's colliding migration ids without losing snooze or approval state",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 73 });
+      yield* Migrator.make({})({
+        loader: Migrator.fromRecord({
+          "74_ThreadSnoozeDependencies": ThreadSnoozeDependencies,
+          "75_RemoteApprovalAttention": RemoteApprovalAttention,
+        }),
+      });
+      yield* sql`UPDATE thread_snooze_transition_cursor SET sequence = 42 WHERE id = 1`;
+      yield* sql`INSERT INTO thread_approval_attention(thread_id, last_attention_sequence) VALUES ('waiting-thread', 17)`;
+      yield* runMigrations();
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT sequence FROM thread_snooze_transition_cursor WHERE id = 1`,
+        [{ sequence: 42 }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT last_attention_sequence FROM thread_approval_attention WHERE thread_id = 'waiting-thread'`,
+        [{ last_attention_sequence: 17 }],
+      );
+      const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+      SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+    `;
+      assert.deepStrictEqual(
+        history.map((row) => [row.migration_id, row.name] as const),
+        migrationManifest,
+      );
+      const columns = yield* sql<{
+        readonly name: string;
+      }>`PRAGMA table_info(orchestration_v2_projection_subagents)`;
+      assert.isTrue(columns.some((column) => column.name === "completion_delivery_state"));
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);

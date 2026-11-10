@@ -1,7 +1,7 @@
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -105,7 +105,7 @@ const make = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
   const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const environment = yield* HostProcess.Environment;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const permit = yield* Semaphore.make(1);
   let lastRequest: number | null = null;
   const failure = (
@@ -267,7 +267,7 @@ const make = Effect.gen(function* () {
       if (current !== null) return yield* use(current);
       const token = yield* credential(cwd);
       const fingerprint = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(Redacted.value(token)))
+        .digest(Digest.sha256, new TextEncoder().encode(Redacted.value(token)))
         .pipe(
           Effect.map(Hex.encode),
           Effect.mapError(() => failure("credentialFingerprint")),
