@@ -192,10 +192,9 @@ it.effect.each(["replace_oldest", "skip_new"] as const)(
         payload: { ...active, status: "completed", completedAt: yield* DateTime.now },
       });
       yield* orchestrator.dispatch({
-        type: "queued-run.start",
+        type: "queue.resume",
         commandId: CommandId.make("start-last"),
         threadId,
-        runId: queued[2]!.id,
       });
       state = yield* projections.getThreadProjection(threadId);
       assert.equal(state.runs.filter((run) => run.status === "queued").length, 0);

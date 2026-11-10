@@ -1030,7 +1030,7 @@ const layerBase: Layer.Layer<
             const pending = yield* sql`
               SELECT 1 WHERE EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runtime_requests
-                WHERE thread_id = ${input.threadId} AND status = 'pending'
+                WHERE thread_id = ${input.threadId} AND status = 'pending' AND kind != 'user_input'
               ) OR EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_threads t,
                   json_each(t.payload_json, '$.guestShare.messages') message

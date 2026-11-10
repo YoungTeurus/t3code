@@ -3854,6 +3854,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "This thread has a pending guest request.",
         });
       }
+      if (command.type === "thread.snooze") {
+        const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
+        if (
+          Option.isNone(parsedSnoozedUntil) ||
+          DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
+          });
+        }
+        snoozedUntil = parsedSnoozedUntil.value;
+      }
       if (
         projection.runtimeRequests.some(
           (request) => request.status === "pending" && request.kind !== "user_input",
