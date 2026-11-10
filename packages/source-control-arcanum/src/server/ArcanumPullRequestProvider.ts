@@ -719,7 +719,7 @@ export const make = Effect.gen(function* () {
             );
             const batchId = yield* crypto
               .digest(
-                "SHA-256",
+                Digest.sha256,
                 new TextEncoder().encode(
                   yield* io(
                     "reviewIntent",

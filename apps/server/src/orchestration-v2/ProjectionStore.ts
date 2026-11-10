@@ -1020,6 +1020,8 @@ export type AgentAwarenessThread = ProjectThreadAwarenessV2Input["thread"] &
     | "activeRunId"
     | "latestRunId"
     | "hasActionableProposedPlan"
+    | "snoozeDependencyWake"
+    | "lastVisitedAt"
   >;
 
 type ShellThreadRow = {
@@ -7210,6 +7212,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               status: state.latestRunStatus,
               activityRunStatus: state.activityRunStatus,
               latestRunCompletedAt: state.latestRunCompletedAt,
+              snoozeDependencyWake: state.thread.snoozeDependencyWake,
+              lastVisitedAt: state.thread.lastVisitedAt,
               latestRunStopRequested: state.latestRunStopRequested,
               pendingRuntimeRequest: state.pendingRuntimeRequest,
               pendingBackgroundTasks: state.pendingBackgroundTasks,

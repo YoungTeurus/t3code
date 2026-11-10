@@ -1,7 +1,8 @@
 import * as NodeBuffer from "node:buffer";
 
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -78,7 +79,8 @@ export const makeArcCheckpoints = Effect.fn("ArcCheckpointStore.make")(function*
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
+  const secureRandom = yield* SecureRandom.SecureRandom;
   const cli = yield* ArcCli.ArcCli;
   const ops = yield* ArcOperations.ArcOperations;
   const process = yield* VcsProcess.VcsProcess;
@@ -93,9 +95,9 @@ export const makeArcCheckpoints = Effect.fn("ArcCheckpointStore.make")(function*
   const io = <A, E, R>(cwd: string, operation: string, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => error(cwd, operation, cause)));
   const hash = Effect.fn("ArcCheckpointStore.hash")(function* (bytes: Uint8Array) {
-    return Buffer.from(yield* io(storageRoot, "hash", crypto.digest("SHA-256", bytes))).toString(
-      "hex",
-    );
+    return Buffer.from(
+      yield* io(storageRoot, "hash", crypto.digest(Digest.sha256, bytes)),
+    ).toString("hex");
   });
   const objectPath = (digest: string) => path.join(storageRoot, "objects", digest);
 
@@ -108,7 +110,7 @@ export const makeArcCheckpoints = Effect.fn("ArcCheckpointStore.make")(function*
       "mkdir",
       fs.makeDirectory(path.dirname(destination), { recursive: true, mode: 0o700 }),
     );
-    const suffix = yield* io(destination, "uuid", crypto.randomUUIDv4());
+    const suffix = yield* io(destination, "uuid", secureRandom.uuidV4());
     const temporary = `${destination}.${suffix}.tmp`;
     yield* io(destination, "write", fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 }));
     yield* io(destination, "publish", fs.rename(temporary, destination)).pipe(
@@ -386,7 +388,7 @@ export const makeArcCheckpoints = Effect.fn("ArcCheckpointStore.make")(function*
       if (!(yield* io(ctx.cwd, "replaceDirectory", removeEmptyDirectory(absolute))))
         return yield* error(ctx.cwd, "nonemptyDirectory");
     }
-    const temporary = `${absolute}.t3-${yield* io(ctx.cwd, "uuid", crypto.randomUUIDv4())}`;
+    const temporary = `${absolute}.t3-${yield* io(ctx.cwd, "uuid", secureRandom.uuidV4())}`;
     if (entry.kind === "symlink")
       yield* io(ctx.cwd, "symlink", fs.symlink(Buffer.from(bytes).toString("utf8"), temporary));
     else

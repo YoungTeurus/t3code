@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -81,7 +82,7 @@ describe("Arcanum PR presentation", () => {
         closed.items.map((item) => item.number),
         [1, 2],
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
   it.effect(
     "resumes a partially published review without duplicating accepted inline comments",
@@ -166,7 +167,7 @@ describe("Arcanum PR presentation", () => {
             }),
           ),
         );
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
   it.effect(
     "does not infer merge permission from green CI and keeps native comment threads intact",
@@ -225,7 +226,9 @@ describe("Arcanum PR presentation", () => {
         assert.equal((yield* provider.getChangeRequest(input)).state, "closed");
       }).pipe(
         Effect.provide(
-          ArcanumPullRequestProviderTestLayer().pipe(Layer.provideMerge(NodeServices.layer)),
+          ArcanumPullRequestProviderTestLayer().pipe(
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          ),
         ),
       ),
   );

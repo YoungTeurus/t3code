@@ -138,7 +138,7 @@ const make = Effect.gen(function* () {
   const credential = Effect.fn("ArcanumApi.credential")(function* (cwd: string) {
     const pinned = yield* PinnedCredential;
     if (pinned !== null) return pinned;
-    const stored = yield* host.settings.get.pipe(
+    const stored = yield* host.settings.getWithSecrets(definition.kind).pipe(
       Effect.map((config) =>
         readSourceControlHostSettings(settings, config.sourceControlHosts[definition.kind]),
       ),
@@ -147,8 +147,9 @@ const make = Effect.gen(function* () {
     const value = Option.getOrUndefined(stored);
     if (value?.hosts["a.yandex-team.ru"]?.enabled === false)
       return yield* failure("credential", "unauthenticated");
+    const saved = value?.tokens["a.yandex-team.ru"];
     const token =
-      value?.tokens["a.yandex-team.ru"]?.trim() ||
+      (typeof saved === "string" ? saved.trim() : "") ||
       environment.ARCANUM_TOKEN?.trim() ||
       environment.ARC_TOKEN?.trim();
     return token ? Redacted.make(token) : yield* Cache.get(cliTokens, cwd);

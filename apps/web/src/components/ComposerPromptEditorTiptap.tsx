@@ -371,47 +371,6 @@ function ComposerPluginNodeView({ node }: NodeViewProps) {
   );
 }
 
-/** Chip presentation for `$name`, or null when the provider does not offer it to users. */
-function composerSkillMeta(
-  skills: ReadonlyArray<ServerProviderSkill>,
-  name: string,
-): SkillMeta | null {
-  const skill = skills.find(
-    (candidate) => candidate.name === name && isProviderSkillUserInvocable(candidate),
-  );
-  if (!skill) return null;
-  const shortDescription = skill.shortDescription?.trim();
-  return {
-    label: formatProviderSkillDisplayName(skill),
-    description: shortDescription || skill.description?.trim() || null,
-  };
-}
-
-function ComposerSkillNodeView({ node }: NodeViewProps) {
-  const actions = use(ComposerContextActionsContext);
-  const skills = use(RichComposerSkillsContext);
-  const skillName = (node.attrs.skillName as string) ?? "";
-  const skillDescription = (node.attrs.skillDescription as string | null) ?? null;
-  const skill = skills.find(
-    (candidate) => candidate.name === skillName && isProviderSkillUserInvocable(candidate),
-  );
-  // The node outlives a provider switch, so its stored label can be another provider's.
-  const skillLabel = skill
-    ? formatProviderSkillDisplayName(skill)
-    : (node.attrs.skillLabel as string) || skillName;
-  return (
-    <NodeViewWrapper as="span" className={CHIP_NODE_SELECTION_CLASS_NAME}>
-      <SkillChipPopover
-        label={skillLabel}
-        description={skill ? skillPopoverDescription(skill) : skillDescription}
-        onViewInstructions={
-          skill?.path && actions.environmentId ? () => actions.openMention(skill.path) : undefined
-        }
-      />
-    </NodeViewWrapper>
-  );
-}
-
 function ComposerModelNodeView({ node }: NodeViewProps) {
   const actions = use(ComposerContextActionsContext);
   return (
@@ -450,47 +409,6 @@ const ComposerModelExtension = Node.create({
     return ReactNodeViewRenderer(ComposerModelNodeView);
   },
 });
-
-/** Chip presentation for `$name`, or null when the provider does not offer it to users. */
-function composerSkillMeta(
-  skills: ReadonlyArray<ServerProviderSkill>,
-  name: string,
-): SkillMeta | null {
-  const skill = skills.find(
-    (candidate) => candidate.name === name && isProviderSkillUserInvocable(candidate),
-  );
-  if (!skill) return null;
-  const shortDescription = skill.shortDescription?.trim();
-  return {
-    label: formatProviderSkillDisplayName(skill),
-    description: shortDescription || skill.description?.trim() || null,
-  };
-}
-
-function ComposerSkillNodeView({ node }: NodeViewProps) {
-  const actions = use(ComposerContextActionsContext);
-  const skills = use(RichComposerSkillsContext);
-  const skillName = (node.attrs.skillName as string) ?? "";
-  const skillDescription = (node.attrs.skillDescription as string | null) ?? null;
-  const skill = skills.find(
-    (candidate) => candidate.name === skillName && isProviderSkillUserInvocable(candidate),
-  );
-  // The node outlives a provider switch, so its stored label can be another provider's.
-  const skillLabel = skill
-    ? formatProviderSkillDisplayName(skill)
-    : (node.attrs.skillLabel as string) || skillName;
-  return (
-    <NodeViewWrapper as="span" className={CHIP_NODE_SELECTION_CLASS_NAME}>
-      <SkillChipPopover
-        label={skillLabel}
-        description={skill ? skillPopoverDescription(skill) : skillDescription}
-        onViewInstructions={
-          skill?.path && actions.environmentId ? () => actions.openMention(skill.path) : undefined
-        }
-      />
-    </NodeViewWrapper>
-  );
-}
 
 /** Chip presentation for `$name`, or null when the provider does not offer it to users. */
 function composerSkillMeta(

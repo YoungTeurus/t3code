@@ -32,7 +32,9 @@ export const makeVcsBackend = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
 
-  const route = <K extends keyof Backend>(method: K): Backend[K] => {
+  const route = <K extends Exclude<keyof Backend, "clearWorktreeCheckoutCache">>(
+    method: K,
+  ): Backend[K] => {
     const routed = Effect.fn(`VcsBackend.${method}`)(function* (...args: Parameters<Backend[K]>) {
       const first = args[0];
       const cwd = typeof first === "string" ? first : first.cwd;
@@ -83,6 +85,8 @@ export const makeVcsBackend = Effect.gen(function* () {
     commit: route("commit"),
     pushCurrentBranch: route("pushCurrentBranch"),
     readRangeContext: route("readRangeContext"),
+    getReviewBranchCommits: route("getReviewBranchCommits"),
+    clearWorktreeCheckoutCache: git.clearWorktreeCheckoutCache,
     getReviewDiffPreview: route("getReviewDiffPreview"),
     getReviewDiffFileContents: route("getReviewDiffFileContents"),
     readConfigValue: route("readConfigValue"),

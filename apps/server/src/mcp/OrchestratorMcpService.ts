@@ -3322,14 +3322,18 @@ const make = Effect.gen(function* () {
         waiting.pipe(Effect.map((result) => ({ kind: "run" as const, result }))),
         approvalWait.pipe(Effect.map((attention) => ({ kind: "attention" as const, attention }))),
       );
+      const attentionRuns =
+        outcome.kind === "attention"
+          ? (yield* loadThreadRecords(input.threadId, ["runs"])).runs
+          : [];
       const result =
         outcome.kind === "run"
           ? outcome.result
           : {
               run:
                 input.runId === undefined
-                  ? (target.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? null)
-                  : (target.runs.find((run) => run.id === input.runId) ?? null),
+                  ? (attentionRuns.toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? null)
+                  : (attentionRuns.find((run) => run.id === input.runId) ?? null),
               timedOut: true,
               resultRun: undefined,
             };

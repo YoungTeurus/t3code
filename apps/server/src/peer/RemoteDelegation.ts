@@ -542,7 +542,7 @@ const make = Effect.gen(function* () {
       previous.pendingApprovalCount === attention.pendingApprovalCount
     )
       return;
-    const id = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const id = yield* random.uuidV4();
     yield* threads.dispatch({
       type: "thread.remote-approval.observe",
       commandId: CommandId.make(`command:remote-approval:${taskId}:${id}`),

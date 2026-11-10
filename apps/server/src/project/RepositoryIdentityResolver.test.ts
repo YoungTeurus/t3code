@@ -97,7 +97,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
       expect(identity?.provider).toBe("github");
       expect(identity?.displayName).toBe("T3Tools/t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("resolves the fetch remote of a partial clone", () =>

@@ -341,6 +341,7 @@ it.effect.each(
         Layer.mergeAll(
           harness.layer,
           NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
@@ -408,6 +409,7 @@ it.effect(
         Layer.mergeAll(
           harness.layer,
           NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
@@ -2515,6 +2517,7 @@ it.effect.each(["skip_new", "replace_oldest"] as const)(
         Layer.mergeAll(
           harness.layer,
           NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
         ),

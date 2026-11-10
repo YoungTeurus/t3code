@@ -105,7 +105,6 @@ function shouldPublishAgentAwarenessEvent(
     case "provider-thread.updated":
       return true;
     case "thread.unsnoozed":
-    case "thread.visited":
       return (
         typeof event.payload === "object" &&
         event.payload !== null &&
