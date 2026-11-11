@@ -349,7 +349,13 @@ export const make = Effect.gen(function* () {
       return ensureGitCommand("GitWorkflowService.hasCommit", input.cwd).pipe(
         Effect.flatMap((handle) =>
           handle.kind === "arc"
-            ? git.resolveCommit({ cwd: input.cwd, revision: input.refName }).pipe(Effect.as(true))
+            ? git.resolveCommit({ cwd: input.cwd, revision: input.refName }).pipe(
+                Effect.as(true),
+                Effect.catchIf(
+                  (error) => error.reason === "ref_not_found",
+                  () => Effect.succeed(false),
+                ),
+              )
             : git
                 .execute({
                   operation: "GitWorkflowService.hasCommit",
