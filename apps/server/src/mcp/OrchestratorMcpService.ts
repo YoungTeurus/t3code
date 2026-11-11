@@ -103,7 +103,9 @@ import type {
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { makeVcsBackend } from "../vcs/VcsBackend.ts";
+import type * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import type * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1040,7 +1042,7 @@ const make = Effect.gen(function* () {
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
-  const gitDriver = yield* GitVcsDriver.GitVcsDriver;
+  const gitDriver = yield* makeVcsBackend;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
@@ -3479,6 +3481,7 @@ export const layer: Layer.Layer<
   | ThreadManagementService.ThreadManagementService
   | ThreadLaunchService.ThreadLaunchService
   | GitVcsDriver.GitVcsDriver
+  | VcsDriverRegistry.VcsDriverRegistry
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService

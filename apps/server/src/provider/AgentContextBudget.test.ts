@@ -40,6 +40,7 @@ import { SecretRequests } from "../secrets/SecretRequests.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { SourceControlRepositoryService } from "../sourceControl/SourceControlRepositoryService.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import { buildCodexAdditionalContext } from "./CodexDeveloperInstructions.ts";
 import { DocumentText } from "./DocumentText.ts";
@@ -51,7 +52,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(AssetSigner)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
-  Layer.mock(GitVcsDriver)({}),
+  Layer.mergeAll(Layer.mock(GitVcsDriver)({}), Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),

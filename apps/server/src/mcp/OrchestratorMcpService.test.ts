@@ -35,6 +35,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -56,6 +57,8 @@ import {
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { VcsUnsupportedOperationError } from "@t3tools/contracts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
@@ -76,6 +79,7 @@ const decodeTarget = Schema.decodeUnknownEffect(OrchestratorMcpTarget);
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
 );
 
 describe("OrchestratorMcpService", () => {
@@ -1844,6 +1848,134 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect.each(["git", "arc"] as const)(
+    "isolates a delegated task at the %s parent checkout commit",
+    (kind) =>
+      Effect.gen(function* () {
+        const workspaceRoot = "/repo/project";
+        const parentCheckout = "/repo/parent/project";
+        const commitSha = "a".repeat(40);
+        const commands: OrchestrationV2ServerCommand[] = [];
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          childThreadId,
+          status: "running",
+          result: null,
+        };
+        const parent = parentProjection([task]);
+        const projection = {
+          ...parent,
+          thread: { ...parent.thread, worktreePath: parentCheckout },
+        };
+        const resolveCommit: GitVcsDriver.GitVcsDriver["Service"]["resolveCommit"] = ({
+          cwd,
+          revision,
+        }) =>
+          (cwd === parentCheckout && revision === "HEAD") ||
+          (cwd === workspaceRoot && revision === commitSha)
+            ? Effect.succeed({ commitSha })
+            : Effect.die("Unexpected checkout or revision");
+        const gitResolve: typeof resolveCommit =
+          kind === "git"
+            ? resolveCommit
+            : ({ cwd }) =>
+                Effect.fail(
+                  new GitCommandError({
+                    operation: "resolveCommit",
+                    command: "git",
+                    cwd,
+                    detail: "fatal: not a git repository",
+                  }),
+                );
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(GitVcsDriver.GitVcsDriver)({ resolveCommit: gitResolve }),
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+            resolve: () =>
+              Effect.succeed({
+                kind,
+                repository: {
+                  kind,
+                  rootPath: workspaceRoot,
+                  metadataPath: "/repo/.arc",
+                  freshness: {
+                    source: "live-local",
+                    observedAt: DateTime.makeUnsafe("2026-11-11T00:00:00Z"),
+                    expiresAt: Option.none(),
+                  },
+                },
+                driver: { backend: { resolveCommit } } as never,
+              }),
+          }),
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: (id) =>
+              Effect.succeed(id === parentThreadId ? projection : childProjection),
+            dispatch: (command) => {
+              commands.push(command);
+              return Effect.succeed({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never);
+            },
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeedSome({
+                id: projectId,
+                title: "Project",
+                workspaceRoot,
+              } as never),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const result = yield* service.delegateTask(scope, {
+            task: "Implement the fix.",
+            isolation: "worktree",
+            mode: "async",
+            clientRequestId: `delegate-isolation-${kind}`,
+          });
+          assert.equal(result.status, "running");
+          assert.equal(commands.length, 1);
+          const command = commands[0]!;
+          assert.equal(command.type, "delegated_task.request");
+          if (command.type !== "delegated_task.request") assert.fail("Expected delegation");
+          assert.deepEqual(command.workspaceStrategy, {
+            type: "worktree",
+            baseRef: commitSha,
+            startFromOrigin: false,
+          });
+        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }),
+  );
+
   it.effect("driver-only delegation skips an instance the project turned off", () =>
     Effect.gen(function* () {
       const altInstanceId = ProviderInstanceId.make("codex-alt");
@@ -2833,6 +2965,18 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)(git)),
+        Layer.provide(
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+            resolve: () =>
+              Effect.fail(
+                new VcsUnsupportedOperationError({
+                  operation: "test",
+                  kind: "unknown",
+                  detail: "No repository fixture",
+                }),
+              ),
+          }),
+        ),
         Layer.provide(
           Layer.mergeAll(
             NodeServices.layer,
