@@ -60,6 +60,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -499,7 +500,12 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
+      ),
+    ),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-remote-delegation-box-" }).pipe(
@@ -621,7 +627,12 @@ const makeLaptop = (
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
+        ),
+      ),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);
@@ -1538,7 +1549,9 @@ it.effect("cancel ends the task here even when the link is gone", () =>
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
+      yield* Ref.set(thread.holdRead, true);
       const delegated = yield* delegateToBox(a);
+      yield* Deferred.await(thread.readStarted);
       yield* a.links.unlink(box.environmentId);
       const cancel = yield* a.call("task_cancel", { taskId: delegated.taskId });
       expect(cancel.structuredContent).toEqual({

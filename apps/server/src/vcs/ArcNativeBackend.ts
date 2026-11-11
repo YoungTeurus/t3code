@@ -69,6 +69,14 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
   const resolveCommit: Backend["resolveCommit"] = Effect.fn("ArcNativeBackend.resolveCommit")(
     function* (input) {
       const commits = yield* log(input.cwd, input.revision, true);
+      if (commits.length === 0)
+        return yield* new GitCommandError({
+          cwd: input.cwd,
+          operation: "ArcNativeBackend.resolveCommit",
+          command: "arc",
+          reason: "ref_not_found",
+          detail: "The Arc revision does not resolve to a commit.",
+        });
       if (commits.length !== 1 || !/^[0-9a-f]{40,64}$/i.test(commits[0]!.commit))
         return yield* error(input.cwd, "resolveCommit");
       return { commitSha: commits[0]!.commit };
