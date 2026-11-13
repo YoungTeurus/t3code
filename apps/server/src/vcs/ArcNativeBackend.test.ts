@@ -86,6 +86,10 @@ describe("Arc native workflow backend", () => {
             ),
           ),
         );
+        assert.deepEqual(yield* backend.resolvePushTarget!(root), {
+          remoteName: "arcadia",
+          branchName: "users/test/task",
+        });
         const remote = yield* backend.statusDetailsRemote!(root, { refreshUpstream: false });
         assert.equal(
           (yield* backend.removeWorktree!({ cwd: root, path: `${root}/other` }).pipe(Effect.result))

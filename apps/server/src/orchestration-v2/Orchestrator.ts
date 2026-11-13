@@ -16112,7 +16112,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ? { ...task, cancelledRunId: cancelledRun.id, updatedAt: now }
                 : undefined;
             // The marker, Stop receipt and interrupt outbox commit together under both locks.
-            yield* dispatchWithReceiptEffect(command, [], cancelledTask);
+            yield* dispatchWithReceiptEffect(command, [], [], cancelledTask);
           }),
         );
         yield* finalizeAppOwnedSubagent(command.threadId).pipe(mapDispatchError(command));

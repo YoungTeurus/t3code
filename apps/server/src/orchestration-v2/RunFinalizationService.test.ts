@@ -346,7 +346,15 @@ it.effect("resolves the identity of a project whose remote was added during the 
       );
     }).pipe(
       Effect.scoped,
-      Effect.provide(layerIdentityRefresh(workspaceRoot, RepositoryIdentityResolver.layer)),
+      Effect.provide(
+        layerIdentityRefresh(
+          workspaceRoot,
+          Layer.effect(
+            RepositoryIdentityResolver.RepositoryIdentityResolver,
+            RepositoryIdentityResolver.make(),
+          ).pipe(Layer.provide(ProcessRunner.layer)),
+        ),
+      ),
     );
   }).pipe(
     Effect.scoped,

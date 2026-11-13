@@ -430,6 +430,11 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     switchRef: (input) => native(input.cwd, "switchRef", ops.switchRef(input)),
     commit: (cwd, subject, body, options) =>
       native(cwd, "commit", ops.commit(cwd, subject, body, options?.stage)),
+    resolvePushTarget: Effect.fn("ArcNativeBackend.resolvePushTarget")(function* (cwd: string) {
+      const ctx = yield* native(cwd, "resolvePushTarget", ops.context(cwd));
+      const branch = ctx.upstream?.replace(/^arcadia\//, "") ?? ctx.branch;
+      return branch === null ? null : { remoteName: "arcadia", branchName: branch };
+    }),
     pushCurrentBranch: (cwd) => native(cwd, "push", ops.pushCurrentBranch(cwd)),
     pullCurrentBranch: (cwd) => native(cwd, "pull", ops.pullCurrentBranch(cwd)),
     getReviewDiffPreview: (input) => native(input.cwd, "diff", ops.getReviewDiffPreview(input)),

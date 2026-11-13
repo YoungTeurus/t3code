@@ -31,6 +31,7 @@ const DETECT_COMMAND = "rev-parse --is-inside-work-tree --show-toplevel --git-co
 describe("VcsDriverRegistry", () => {
   const makeDiskBackedLayer = (rootDir: string, calls: string[]) =>
     Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-registry-failing-" })),
       Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Layer.provide(ServerConfig.ServerConfig.layerTest(rootDir, { prefix: "t3-arc-registry-" })),
       Layer.provide(
@@ -184,6 +185,7 @@ describe("VcsDriverRegistry", () => {
   );
   const makeFailingLayer = (detectOutput: VcsProcess.VcsProcessOutput) =>
     Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-registry-failing-" })),
       Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
       Layer.provide(
         Layer.mock(VcsProjectConfig.VcsProjectConfig)({

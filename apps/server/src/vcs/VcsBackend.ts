@@ -84,6 +84,7 @@ export const makeVcsBackend = Effect.gen(function* () {
     prepareCommitContext: route("prepareCommitContext"),
     commit: route("commit"),
     pushCurrentBranch: route("pushCurrentBranch"),
+    resolvePushTarget: route("resolvePushTarget"),
     readRangeContext: route("readRangeContext"),
     getReviewBranchCommits: route("getReviewBranchCommits"),
     clearWorktreeCheckoutCache: git.clearWorktreeCheckoutCache,

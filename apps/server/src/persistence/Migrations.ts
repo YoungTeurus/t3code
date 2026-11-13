@@ -343,10 +343,14 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     }
     executedMigrations.push(...(yield* run({ loader: makeMigrationLoader(id) })));
   }
-  if (toMigrationInclusive === undefined) {
-    yield* run({ loader: forkMigrationLoader, table: "fork_sql_migrations" });
-  }
-  const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
+  const forkMigrations =
+    toMigrationInclusive === undefined
+      ? yield* run({ loader: forkMigrationLoader, table: "fork_sql_migrations" })
+      : [];
+  const migrations = [
+    ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forkMigrations.map(([id, name]) => `F${String(id).padStart(3, "0")}_${name}`),
+  ];
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));

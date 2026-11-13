@@ -169,7 +169,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
           normalizeResolvedPath(resolvedRepoRoot),
         );
-      }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+      }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect.each(["bare clone", "dot-bare"] as const)(
@@ -371,7 +371,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       expect(identity?.canonicalKey).toBe("github.com/julius/t3code-fork");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("follows an OWNER/REPO mark only to a remote that fetches that repository", () =>
@@ -411,7 +411,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       yield* git(cwd, ["remote", "add", "ghe-parent", "https://ghe.example.com:8443/acme/web.git"]);
       yield* git(cwd, ["config", "remote.ghe-fork.gh-resolved", "acme/web"]);
       expect((yield* resolveFresh())?.locator.remoteName).toBe("ghe-parent");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("reads the project's gh default when the server inherited GIT_DIR", () =>
@@ -440,7 +440,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       expect(identity?.canonicalKey).toBe("github.com/julius/t3code-fork");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
