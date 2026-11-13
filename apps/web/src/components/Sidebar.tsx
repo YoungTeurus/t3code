@@ -3466,8 +3466,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             settlementSupported={serverConfigs.has(thread.environmentId)}
                             snoozeSupported={serverConfigs.has(thread.environmentId)}
                             snoozeDependencySupported={
-                              serverConfigs.get(thread.environmentId)?.environment.capabilities
-                                .threadSnoozeDependency === true
+                              serverConfigs.get(thread.environmentId)?.environment?.capabilities
+                                ?.threadSnoozeDependency === true
                             }
                             pinningSupported={serverConfigs.has(thread.environmentId)}
                             isPinned={thread.pinnedAt != null}

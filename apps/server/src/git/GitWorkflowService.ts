@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 
 import {
@@ -195,8 +196,11 @@ export const make = Effect.gen(function* () {
   const git = yield* makeVcsBackend;
   const gitManager = yield* GitManager.GitManager;
   const workspaceLease = yield* makeWorkspaceLease;
+  const fileSystem = yield* FileSystem.FileSystem;
   const withCheckoutLease = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
-    workspaceLease(cwd, effect).pipe(
+    fileSystem.realPath(cwd).pipe(
+      Effect.orElseSucceed(() => cwd),
+      Effect.flatMap((canonical) => workspaceLease(canonical, effect)),
       Effect.mapError((cause) =>
         PlatformError.isPlatformError(cause)
           ? new GitCommandError({
