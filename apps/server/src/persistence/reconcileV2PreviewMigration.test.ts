@@ -8,8 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
 import RemoveRedundantProjectionIndexes from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
-import ThreadSnoozeDependencies from "./Migrations/081_ThreadSnoozeDependencies.ts";
-import RemoteApprovalAttention from "./Migrations/082_RemoteApprovalAttention.ts";
+import ThreadSnoozeDependencies from "./ForkMigrations/F001_ThreadSnoozeDependencies.ts";
+import RemoteApprovalAttention from "./ForkMigrations/F002_RemoteApprovalAttention.ts";
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
 
 const seedPreview = Effect.gen(function* () {
@@ -62,8 +62,14 @@ describe("V2 preview upgrade", () => {
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
         [80, "ScheduledTaskThreadMode"],
-        [81, "ThreadSnoozeDependencies"],
-        [82, "RemoteApprovalAttention"],
+        [81, "ProjectionMessageSearchText"],
+        [82, "TurnItemConversationIndex"],
+        [83, "CommandReadIndexes"],
+        [84, "LastExecutedRunIndex"],
+        [85, "TurnItemCounts"],
+        [86, "QueuedTurnInputIndex"],
+        [87, "ProjectionProjectsCustomTitle"],
+        [88, "TurnItemTypeStatusIndex"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -167,8 +173,14 @@ describe("V2 preview upgrade", () => {
         [78, "DropOrchestrationEventCorrelationIndex"],
         [79, "DelegatedRecoveryIndexes"],
         [80, "ScheduledTaskThreadMode"],
-        [81, "ThreadSnoozeDependencies"],
-        [82, "RemoteApprovalAttention"],
+        [81, "ProjectionMessageSearchText"],
+        [82, "TurnItemConversationIndex"],
+        [83, "CommandReadIndexes"],
+        [84, "LastExecutedRunIndex"],
+        [85, "TurnItemCounts"],
+        [86, "QueuedTurnInputIndex"],
+        [87, "ProjectionProjectsCustomTitle"],
+        [88, "TurnItemTypeStatusIndex"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -188,16 +200,16 @@ describe("V2 preview upgrade", () => {
   );
 });
 
-it.effect(
-  "upgrades the fork's colliding migration ids without losing snooze or approval state",
-  () =>
+it.effect.each([74, 81] as const)(
+  "upgrades the fork's colliding migration ids at %s without losing snooze or approval state",
+  (firstId) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 73 });
+      yield* runMigrations({ toMigrationInclusive: firstId - 1 });
       yield* Migrator.make({})({
         loader: Migrator.fromRecord({
-          "74_ThreadSnoozeDependencies": ThreadSnoozeDependencies,
-          "75_RemoteApprovalAttention": RemoteApprovalAttention,
+          [`${firstId}_ThreadSnoozeDependencies`]: ThreadSnoozeDependencies,
+          [`${firstId + 1}_RemoteApprovalAttention`]: RemoteApprovalAttention,
         }),
       });
       yield* sql`UPDATE thread_snooze_transition_cursor SET sequence = 42 WHERE id = 1`;
@@ -218,6 +230,13 @@ it.effect(
       assert.deepStrictEqual(
         history.map((row) => [row.migration_id, row.name] as const),
         migrationManifest,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id, name FROM fork_sql_migrations ORDER BY migration_id`,
+        [
+          { migration_id: 1, name: "ThreadSnoozeDependencies" },
+          { migration_id: 2, name: "RemoteApprovalAttention" },
+        ],
       );
       const columns = yield* sql<{
         readonly name: string;

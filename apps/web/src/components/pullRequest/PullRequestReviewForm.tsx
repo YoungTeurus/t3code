@@ -196,6 +196,7 @@ export function PullRequestReviewForm({
             submitting.
           </p>
         ) : null}
+
         {offered.length > 1 ? (
           <Select
             value={selectedVerdict?.value ?? null}
