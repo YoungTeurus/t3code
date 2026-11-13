@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -88,7 +89,7 @@ describe("Arc operations", () => {
         });
         assert.equal(contents.newContents, "/outside/missing");
       }).pipe(Effect.provide(dependencies));
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
   it.effect("switches in the existing checkout and commits only selected paths", () =>
     Effect.gen(function* () {
@@ -178,7 +179,7 @@ describe("Arc operations", () => {
           ArcOperations.layer.pipe(Layer.provide(ArcCli.layer), Layer.provide(process)),
         ),
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("keeps repository root separate from project cwd and paginates native refs", () =>
@@ -249,7 +250,7 @@ describe("Arc operations", () => {
                 }),
             }),
           ),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
         ),
       ),
     ),

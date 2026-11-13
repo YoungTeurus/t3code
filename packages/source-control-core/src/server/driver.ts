@@ -5,7 +5,8 @@ import type {
   SourceControlSignInPrompt,
   SourceControlSignInResult,
 } from "@t3tools/contracts";
-import type * as Crypto from "effect/Crypto";
+import type * as Digest from "effect/crypto/Digest";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
@@ -26,6 +27,8 @@ export interface SourceControlMediaRequest {
   readonly url: string;
   /** Request headers to forward, such as `range`. */
   readonly headers: Readonly<Record<string, string>>;
+  /** `owner/name` of the change request the media is in, else of the checkout it was shown in. */
+  readonly repository?: string;
 }
 
 /** The server side of a definition's `credentials.appSignIn`. */
@@ -64,6 +67,10 @@ export interface SourceControlDriverInstance {
     Scope.Scope
   >;
   readonly signIn?: SourceControlSignIn;
+  /** Whether the server's account on `host` starred `repository` (`owner/name`). */
+  readonly isRepositoryStarred?: (host: string, repository: string) => Effect.Effect<boolean>;
+  /** Stars `repository` as the server's account on `host`; false when the forge refused. */
+  readonly starRepository?: (host: string, repository: string) => Effect.Effect<boolean>;
 }
 
 /** What the server gives every driver. A driver builds anything else it needs itself. */
@@ -73,7 +80,8 @@ export type SourceControlDriverServices =
   | HttpClient.HttpClient
   | FileSystem.FileSystem
   | Path.Path
-  | Crypto.Crypto;
+  | Digest.Digest
+  | SecureRandom.SecureRandom;
 
 export interface SourceControlDriver {
   readonly kind: SourceControlProviderKind;

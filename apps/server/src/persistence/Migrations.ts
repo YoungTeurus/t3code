@@ -76,8 +76,15 @@ import Migration0070 from "./Migrations/070_PeerLinks.ts";
 import Migration0071 from "./Migrations/071_PeerLinkFence.ts";
 import Migration0072 from "./Migrations/072_WaitingLinkRequestIndex.ts";
 import Migration0073 from "./Migrations/073_ActiveTurnItemIndexes.ts";
-import Migration0074 from "./Migrations/074_ThreadSnoozeDependencies.ts";
-import Migration0075 from "./Migrations/075_RemoteApprovalAttention.ts";
+import Migration0074 from "./Migrations/074_ExcludeAttachmentPlaceholdersFromSearch.ts";
+import Migration0075 from "./Migrations/075_SubagentDeliveryState.ts";
+import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
+import Migration0077 from "./Migrations/077_RepairBooleanSettledOverride.ts";
+import Migration0078 from "./Migrations/078_DropOrchestrationEventCorrelationIndex.ts";
+import Migration0079 from "./Migrations/079_DelegatedRecoveryIndexes.ts";
+import Migration0080 from "./Migrations/080_ScheduledTaskThreadMode.ts";
+import Migration0081 from "./Migrations/081_ThreadSnoozeDependencies.ts";
+import Migration0082 from "./Migrations/082_RemoteApprovalAttention.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -154,8 +161,15 @@ const migrationEntries = [
   [71, "PeerLinkFence", Migration0071],
   [72, "WaitingLinkRequestIndex", Migration0072],
   [73, "ActiveTurnItemIndexes", Migration0073],
-  [74, "ThreadSnoozeDependencies", Migration0074],
-  [75, "RemoteApprovalAttention", Migration0075],
+  [74, "ExcludeAttachmentPlaceholdersFromSearch", Migration0074],
+  [75, "SubagentDeliveryState", Migration0075],
+  [76, "ProjectionProjectsPinArchive", Migration0076],
+  [77, "RepairBooleanSettledOverride", Migration0077],
+  [78, "DropOrchestrationEventCorrelationIndex", Migration0078],
+  [79, "DelegatedRecoveryIndexes", Migration0079],
+  [80, "ScheduledTaskThreadMode", Migration0080],
+  [81, "ThreadSnoozeDependencies", Migration0081],
+  [82, "RemoteApprovalAttention", Migration0082],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -204,6 +218,33 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
   });
 });
 
+// The fork shipped 74/75 before upstream assigned those ids; keep the schema and replay its ledger at 81/82.
+const reconcileForkMigrations = Effect.fn("reconcileForkMigrations")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const tables =
+        yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
+      if (tables.length === 0) return;
+      const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+      SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 74
+    `;
+      const isFork = (row: { readonly migration_id: number; readonly name: string }) =>
+        (row.migration_id === 74 && row.name === "ThreadSnoozeDependencies") ||
+        (row.migration_id === 75 && row.name === "RemoteApprovalAttention");
+      if (!history.some(isFork)) return;
+      if (!history.every(isFork)) {
+        return yield* new Migrator.MigrationError({
+          kind: "BadState",
+          message: "Cannot upgrade fork migration ids 74/75 with unexpected later migrations.",
+        });
+      }
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 74 AND name = 'ThreadSnoozeDependencies'`;
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 75 AND name = 'RemoteApprovalAttention'`;
+    }),
+  );
+});
+
 const run = Migrator.make({});
 
 export interface RunMigrationsOptions {
@@ -217,6 +258,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
+    yield* reconcileForkMigrations();
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
   const executedMigrations = [

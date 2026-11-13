@@ -1,7 +1,7 @@
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -105,7 +105,7 @@ const make = Effect.gen(function* () {
   const http = yield* HttpClient.HttpClient;
   const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const environment = yield* HostProcess.Environment;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const permit = yield* Semaphore.make(1);
   let lastRequest: number | null = null;
   const failure = (
@@ -138,7 +138,7 @@ const make = Effect.gen(function* () {
   const credential = Effect.fn("ArcanumApi.credential")(function* (cwd: string) {
     const pinned = yield* PinnedCredential;
     if (pinned !== null) return pinned;
-    const stored = yield* host.settings.get.pipe(
+    const stored = yield* host.settings.getWithSecrets(definition.kind).pipe(
       Effect.map((config) =>
         readSourceControlHostSettings(settings, config.sourceControlHosts[definition.kind]),
       ),
@@ -147,8 +147,9 @@ const make = Effect.gen(function* () {
     const value = Option.getOrUndefined(stored);
     if (value?.hosts["a.yandex-team.ru"]?.enabled === false)
       return yield* failure("credential", "unauthenticated");
+    const saved = value?.tokens["a.yandex-team.ru"];
     const token =
-      value?.tokens["a.yandex-team.ru"]?.trim() ||
+      (typeof saved === "string" ? saved.trim() : "") ||
       environment.ARCANUM_TOKEN?.trim() ||
       environment.ARC_TOKEN?.trim();
     return token ? Redacted.make(token) : yield* Cache.get(cliTokens, cwd);
@@ -267,7 +268,7 @@ const make = Effect.gen(function* () {
       if (current !== null) return yield* use(current);
       const token = yield* credential(cwd);
       const fingerprint = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(Redacted.value(token)))
+        .digest(Digest.sha256, new TextEncoder().encode(Redacted.value(token)))
         .pipe(
           Effect.map(Hex.encode),
           Effect.mapError(() => failure("credentialFingerprint")),
