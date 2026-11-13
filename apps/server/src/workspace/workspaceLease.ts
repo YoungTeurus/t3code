@@ -39,10 +39,10 @@ export const makeWorkspaceLease = Effect.gen(function* () {
     const resolved = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => path.resolve(cwd)));
     let current = resolved;
     while (true) {
-      if (yield* fs.exists(path.join(current, ".git"))) return path.resolve(cwd);
+      if (yield* fs.exists(path.join(current, ".git"))) return current;
       if (yield* fs.exists(path.join(current, ".arc", "HEAD"))) return `arc:${current}`;
       const parent = path.dirname(current);
-      if (parent === current) return path.resolve(cwd);
+      if (parent === current) return resolved;
       current = parent;
     }
   });

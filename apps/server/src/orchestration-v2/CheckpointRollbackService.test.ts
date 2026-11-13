@@ -453,7 +453,9 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
             Layer.mock(ProjectStore.ProjectStoreV2)({
               get: () => Effect.succeedSome({ workspaceRoot } as never),
             }),
-            Layer.mock(GitWorkflow.GitWorkflowService)({}),
+            Layer.mock(GitWorkflow.GitWorkflowService)({
+              recoverWorktree: () => Effect.succeed(false),
+            }),
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               restore: () =>
                 Deferred.succeed(restoreEntered, undefined).pipe(
