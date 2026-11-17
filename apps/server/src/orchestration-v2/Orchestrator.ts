@@ -4234,6 +4234,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    hasTriggerAutomation = false,
   ) {
     const thread = yield* projectionStore.getThread(command.threadId).pipe(
       Effect.mapError(
@@ -4640,6 +4641,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const now = yield* DateTime.now;
     if (command.type === "thread.metadata.update" && command.triggerWait != null) {
+      if (
+        !hasTriggerAutomation &&
+        !threadPullRequestsOf(thread).some(
+          (link) => link.source !== "stack-dismissed" && link.watch !== undefined,
+        )
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Waiting requires an active native PR watch or an enabled automation bound to this thread.",
+        });
+      }
       if (
         thread.lineage.relationshipToParent === "subagent" ||
         isProviderNativeSubagentThread(thread)
@@ -5290,7 +5304,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : !command.watching
                 ? undefined
                 : (existing.watch ?? {
-                    startedAt,
+                    // A restart in the same clock tick must still reject the old watch's reads.
+                    startedAt:
+                      existing.endedWatch &&
+                      Date.parse(existing.endedWatch.startedAt) >= DateTime.toEpochMillis(now)
+                        ? DateTime.formatIso(
+                            DateTime.add(DateTime.makeUnsafe(existing.endedWatch.startedAt), {
+                              milliseconds: 1,
+                            }),
+                          )
+                        : startedAt,
                     headSha: null,
                     failedChecks: [],
                     passed: false,
@@ -5331,13 +5354,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             command.type === "thread.pull-request-watch.sync" && watch === undefined
               ? command.endedWatch
               : undefined;
+          const pullRequests = links.map((link) =>
+            link === existing
+              ? withPullRequestWatch(final ? { ...link, watch: final } : link, watch)
+              : link,
+          );
           return {
             ...thread,
-            pullRequests: links.map((link) =>
-              link === existing
-                ? withPullRequestWatch(final ? { ...link, watch: final } : link, watch)
-                : link,
-            ),
+            ...(command.type === "thread.pull-request.watch" &&
+            !command.watching &&
+            !hasTriggerAutomation &&
+            !pullRequests.some(
+              (link) => link.source !== "stack-dismissed" && link.watch !== undefined,
+            )
+              ? { triggerWait: null }
+              : {}),
+            pullRequests,
             updatedAt: command.type === "thread.pull-request.watch" ? now : thread.updatedAt,
           };
         }
@@ -15259,6 +15291,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
     sideChatIds: ReadonlyArray<ThreadId>,
+    hasTriggerAutomation: boolean,
   ): Effect.fn.Return<
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -15422,12 +15455,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.interaction-mode.set":
       case "thread.model-selection.set":
       case "provider.switch":
-        yield* dispatchThreadMutation(command, events, effects);
+        yield* dispatchThreadMutation(command, events, effects, hasTriggerAutomation);
         break;
       case "thread.metadata.update": {
         const continuation = metadataUpdateContinuation(command);
         if (continuation !== undefined) yield* refuseNativeSubagentMessage(command);
-        yield* dispatchThreadMutation(command, events, effects);
+        yield* dispatchThreadMutation(command, events, effects, hasTriggerAutomation);
         if (continuation !== undefined) {
           cancelUnsettledEffects = yield* dispatchMessage(continuation, events, effects);
           yield* recordSubagentFollowup(continuation, events).pipe(mapDispatchError(command));
@@ -15808,7 +15841,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .latestSequence({ threadId: commandThreadId(command) })
           .pipe(mapDispatchError(command))
       : undefined;
-    const plan = yield* dispatchOnce(command, sideChatIds).pipe(
+    const checksTriggerSources =
+      (command.type === "thread.metadata.update" && command.triggerWait != null) ||
+      (command.type === "thread.pull-request.watch" && !command.watching);
+    const hasTriggerAutomation = checksTriggerSources
+      ? yield* eventSink
+          .hasEnabledBoundAutomation(commandThreadId(command))
+          .pipe(mapDispatchError(command))
+      : false;
+    const plan = yield* dispatchOnce(command, sideChatIds, hasTriggerAutomation).pipe(
       Effect.tap((planned) => refuseAboveRuntimeModeCeiling(command, planned.events)),
       Effect.filterOrFail(
         (planned) =>

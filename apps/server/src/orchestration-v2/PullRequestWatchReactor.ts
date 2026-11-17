@@ -525,30 +525,28 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const closed = (groupKey: string, target: WatchTarget) =>
+  const terminal = (groupKey: string, target: WatchTarget, state: "merged" | "closed") =>
     hold({
       groupKey,
       target,
       next: null,
       wake: {
-        text: `Pull request #${target.link.number} (${target.link.url}) was closed, so T3 Code stopped watching it. Call watch_pull_request if it reopens.`,
+        text: `Pull request #${target.link.number} (${target.link.url}) was ${state}, so T3 Code stopped watching it.${state === "closed" ? " Call watch_pull_request if it reopens." : ""}`,
         notification: {
           source: { kind: "monitor" },
           outcome: "updated",
-          summary: `#${target.link.number}: closed, stopped watching`,
+          summary: `#${target.link.number}: ${state}, stopped watching`,
         },
       },
-      reason: "closed",
+      reason: state,
     });
 
-  const endsWithoutRead = ({ thread, link }: WatchTarget): WatchEndReason | undefined =>
-    link.snapshot?.state === "merged"
-      ? "merged"
-      : thread.settledOverride === "settled" || thread.settledAt !== null
-        ? "settled"
-        : thread.lineage.relationshipToParent === "subagent"
-          ? "subagent"
-          : undefined;
+  const endsWithoutRead = ({ thread }: WatchTarget): WatchEndReason | undefined =>
+    thread.settledOverride === "settled" || thread.settledAt !== null
+      ? "settled"
+      : thread.lineage.relationshipToParent === "subagent"
+        ? "subagent"
+        : undefined;
 
   const eachTarget = <E>(
     group: WatchGroup,
@@ -652,11 +650,8 @@ export const make = Effect.gen(function* () {
     }
     if (detail.state !== "open") {
       lastReads.delete(group.key);
-      return yield* eachTarget(group, (target) =>
-        detail.state === "closed"
-          ? closed(group.key, target)
-          : record(target, null).pipe(Effect.tap(() => ended(target, "merged"))),
-      );
+      const state = detail.state;
+      return yield* eachTarget(group, (target) => terminal(group.key, target, state));
     }
 
     // A failed comments read leaves remarks incomplete, so the next pass reads them again;
@@ -758,6 +753,15 @@ export const make = Effect.gen(function* () {
       }
       // Group by project because checkout access differs; one failure must not end another project's watches.
       const key = `${target.thread.projectId} ${threadPullRequestKeyOf(target.link)}`;
+      const snapshot = target.link.snapshot;
+      if (
+        snapshot?.state === "merged" ||
+        (snapshot?.state === "closed" &&
+          Date.parse(snapshot.syncedAt) >= Date.parse(target.watch.startedAt))
+      ) {
+        yield* terminal(key, target, snapshot.state);
+        continue;
+      }
       byPullRequest.set(key, [...(byPullRequest.get(key) ?? []), target]);
     }
     const groups = [...byPullRequest].map(([key, members]): WatchGroup => ({
