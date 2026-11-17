@@ -122,6 +122,7 @@ interface BoxThread {
   readonly executedModel: Ref.Ref<string | null>;
   /** The run each wait asked for, in order. */
   readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
+  readonly waitStarted: Deferred.Deferred<void>;
   /** The thread's run ends with a task of its own still running, whose result wakes it again. */
   readonly nested: Ref.Ref<boolean>;
   /** Completed once a wait there blocks on that task. */
@@ -179,6 +180,7 @@ const makeBoxThread = Effect.gen(function* () {
     restart: yield* Ref.make<{ readonly of: RunId; readonly reply: string } | null>(null),
     executedModel: yield* Ref.make<string | null>(null),
     waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
+    waitStarted: yield* Deferred.make<void>(),
     nested: yield* Ref.make(false),
     nestedWaiting: yield* Deferred.make<void>(),
     nestedSettled: yield* Deferred.make<void>(),
@@ -308,6 +310,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     waitForThread: (input) =>
       Effect.gen(function* () {
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
+        yield* Deferred.succeed(thread.waitStarted, undefined);
         // A thread with no run has nothing to wait for.
         if (yield* Ref.get(thread.runless)) {
           return { threadId: input.threadId, run: null, timedOut: false };
@@ -1913,11 +1916,8 @@ it.effect("cancel ends the task here even when the link is gone", () =>
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
 
-      yield* Ref.set(thread.holdRead, true);
-      const pending = yield* delegateToBox(a).pipe(Effect.forkChild);
-      yield* Deferred.await(thread.readStarted);
-      yield* Deferred.succeed(thread.releaseRead, undefined);
-      const delegated = yield* Fiber.join(pending);
+      const delegated = yield* delegateToBox(a);
+      yield* Deferred.await(thread.waitStarted);
       yield* a.links.unlink(box.environmentId);
       const cancel = yield* a.call("task_cancel", { taskId: delegated.taskId });
       expect(cancel.structuredContent).toEqual({

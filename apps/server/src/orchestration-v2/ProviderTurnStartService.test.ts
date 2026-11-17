@@ -329,6 +329,7 @@ const layerRestoreLeaseTest = layerThreadWorktreeRestore.pipe(
       } as never),
       layerWorktreeLocation(),
       Layer.mock(GitWorkflow.GitWorkflowService)({
+        recoverWorktree: () => Effect.succeed(false),
         pruneWorktrees: () => Effect.void,
         createWorktree: restoreLeaseCreateWorktree,
         listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
