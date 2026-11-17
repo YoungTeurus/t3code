@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as ServerConfig from "../config.ts";
 
 import { checkpointRefForScopeOrdinal } from "../orchestration-v2/CheckpointService.ts";
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
@@ -196,6 +197,7 @@ const layerStore = CheckpointStore.layer.pipe(
   Layer.provide(NodeServices.layer),
 );
 const layerTest = Layer.merge(layerStore, layerVcsProcess).pipe(
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-arc-diff-query-" })),
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(NodeCrypto.layer),
 );

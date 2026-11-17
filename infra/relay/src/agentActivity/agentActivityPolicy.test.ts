@@ -6,6 +6,7 @@ import {
   attentionTransitionRows,
   terminalTransitionRows,
   shouldAlertForActivity,
+  wakeTransitionRows,
 } from "./agentActivityAlerts.ts";
 
 const state: RelayAgentActivityState = {
@@ -31,6 +32,38 @@ const aggregate = (states: RelayAgentActivityState[]) =>
   makeAggregateState({ activeStates: states, terminalState: null, nowMs: 0 })!;
 
 describe("shared agent activity policy", () => {
+  it("alerts once for a fresh dependency wake under completion notification settings", () => {
+    const previous = aggregate([state]);
+    const woke = { ...state, snoozeWake: { eventId: "wake-1", occurredAt: state.updatedAt } };
+    const next = aggregate([woke]);
+    const input = { previousAggregate: previous, nextAggregate: next, preferences, nowMs: 0 };
+    expect(wakeTransitionRows(input)).toMatchObject([{ status: "Woke" }]);
+    expect(wakeTransitionRows({ ...input, previousAggregate: next })).toEqual([]);
+    expect(wakeTransitionRows({ ...input, previousAggregate: null })).toHaveLength(1);
+    expect(
+      wakeTransitionRows({ ...input, preferences: { ...preferences, notifyOnCompletion: false } }),
+    ).toEqual([]);
+    expect(wakeTransitionRows({ ...input, nowMs: 180_000 })).toEqual([]);
+  });
+
+  it("keeps a freshly awakened thread in an aggregate with many active agents", () => {
+    const running = Array.from({ length: 6 }, (_, i) => ({
+      ...state,
+      threadId: ThreadId.make(`running-wake-${i}`),
+    }));
+    const woke = {
+      ...state,
+      phase: "completed" as const,
+      headline: "Thread woke",
+      snoozeWake: { eventId: "wake-2", occurredAt: state.updatedAt },
+    };
+    const previousAggregate = aggregate(running);
+    const nextAggregate = aggregate([...running, woke]);
+    expect(nextAggregate.activities[0]?.threadId).toBe(state.threadId);
+    expect(
+      wakeTransitionRows({ previousAggregate, nextAggregate, preferences, nowMs: 0 }),
+    ).toHaveLength(1);
+  });
   it.each(["waiting_for_approval", "waiting_for_input"] as const)(
     "keeps an older %s ahead of five running rows",
     (phase) => {

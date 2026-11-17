@@ -30,6 +30,7 @@ import type {
   ProviderOptionDescriptor,
   ServerProviderModel,
   ServerProviderSkill,
+  ServerProviderPluginCatalog,
 } from "@t3tools/contracts";
 import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
 
@@ -59,6 +60,7 @@ import {
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import packageJson from "../../package.json" with { type: "json" };
+import { readCodexPluginCatalog } from "./codexPluginCatalog.ts";
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 type CodexRateLimitsProbe =
@@ -166,6 +168,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly daybreakEnabled?: boolean | undefined;
   readonly cyberAccessProgramsUnavailable?: boolean | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly pluginCatalog?: ServerProviderPluginCatalog;
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -768,45 +771,55 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + input.probeTimeoutMs - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, { config, nativeUsage, rateLimits }] = yield* Effect.all(
-    [
-      withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
-      accountResponse.account?.type === "chatgpt"
-        ? requestCodexChatGptModels({
-            client,
-            codexHome: initialize.codexHome,
-            spawnedAtMs,
-            deadlineMs,
-          })
-        : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
-      // The shared catalog must exclude config from the server's launch project.
-      withCodexDiscoveryDeadline(
-        client.request("config/read", { includeLayers: false }),
-        deadlineMs,
-        CODEX_CONFIG_PROBE_TIMEOUT_MS,
-      ).pipe(
-        Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
-        Effect.flatMap((config) => {
-          // Only a confirmed native route may probe or publish the login's quota.
-          const nativeUsage =
-            !input.skipNativeUsage &&
-            config !== undefined &&
-            codexRoutesSpendNativeQuota(accountResponse, config.config);
-          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
-            ? readCodexRateLimits(client, deadlineMs)
-            : Effect.undefined;
-          return readUsage.pipe(
-            Effect.map((rateLimits) => ({
-              config: config?.config,
-              nativeUsage,
-              rateLimits,
-            })),
-          );
-        }),
-      ),
-    ],
-    { concurrency: "unbounded" },
-  );
+  const [skillsResponse, models, { config, nativeUsage, rateLimits }, pluginCatalog] =
+    yield* Effect.all(
+      [
+        withCodexDiscoveryDeadline(
+          client.request("skills/list", { cwds: [input.cwd] }),
+          deadlineMs,
+        ),
+        accountResponse.account?.type === "chatgpt"
+          ? requestCodexChatGptModels({
+              client,
+              codexHome: initialize.codexHome,
+              spawnedAtMs,
+              deadlineMs,
+            })
+          : withCodexDiscoveryDeadline(requestAllCodexModels(client), deadlineMs),
+        // The shared catalog must exclude config from the server's launch project.
+        withCodexDiscoveryDeadline(
+          client.request("config/read", { includeLayers: false }),
+          deadlineMs,
+          CODEX_CONFIG_PROBE_TIMEOUT_MS,
+        ).pipe(
+          Effect.catch(() =>
+            Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined)),
+          ),
+          Effect.flatMap((config) => {
+            // Only a confirmed native route may probe or publish the login's quota.
+            const nativeUsage =
+              !input.skipNativeUsage &&
+              config !== undefined &&
+              codexRoutesSpendNativeQuota(accountResponse, config.config);
+            const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
+              ? readCodexRateLimits(client, deadlineMs)
+              : Effect.undefined;
+            return readUsage.pipe(
+              Effect.map((rateLimits) => ({
+                config: config?.config,
+                nativeUsage,
+                rateLimits,
+              })),
+            );
+          }),
+        ),
+        withCodexDiscoveryDeadline(
+          readCodexPluginCatalog(client.request("plugin/installed", { cwds: [] })),
+          deadlineMs,
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
 
   const cyberAccess = Option.getOrUndefined(decodeCodexCyberAccessConfig(config));
   return {
@@ -823,6 +836,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       accountResponse.account?.type === "apiKey" &&
       (config === undefined || cyberAccess?.features?.api_key_cyber_access_programs === false),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
+    ...(pluginCatalog === undefined ? {} : { pluginCatalog }),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -864,20 +878,28 @@ const probeCodexCliVersion = Effect.fn("probeCodexCliVersion")(
   ),
 );
 
-export const probeCodexSkillsForCwd = Effect.fn("probeCodexSkillsForCwd")(function* (input: {
-  readonly binaryPath: string;
-  readonly homePath?: string;
-  readonly launchArgs?: string;
-  readonly cwd: string;
-  readonly environment?: NodeJS.ProcessEnv;
-}) {
-  const { client } = yield* withCodexAppServerClient({
-    ...input,
-    environment: providerProbeEnvironment(input.environment ?? process.env),
-  });
-  const skillsResponse = yield* client.request("skills/list", { cwds: [input.cwd] });
-  return parseCodexSkillsListResponse(skillsResponse, input.cwd);
-});
+export const probeCodexWorkspaceCapabilities = Effect.fn("probeCodexWorkspaceCapabilities")(
+  function* (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+    readonly launchArgs?: string;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) {
+    const { client } = yield* withCodexAppServerClient({
+      ...input,
+      environment: providerProbeEnvironment(input.environment ?? process.env),
+    });
+    const [skillsResponse, pluginCatalog] = yield* Effect.all(
+      [
+        client.request("skills/list", { cwds: [input.cwd] }),
+        readCodexPluginCatalog(client.request("plugin/installed", { cwds: [input.cwd] })),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { skills: parseCodexSkillsListResponse(skillsResponse, input.cwd), pluginCatalog };
+  },
+);
 
 // Long enough for a burst of workspace switches; short because the helper holds the user's
 // binary open, and Windows refuses to overwrite or delete a running executable.
@@ -914,14 +936,22 @@ export const makeCodexSkillsProbe = Effect.fn("makeCodexSkillsProbe")(function* 
       (key) => !Equal.equals(key, launch),
     );
     yield* Effect.forEach(stale, (key) => RcMap.invalidate(helpers, key), { discard: true });
-    const skillsResponse = yield* RcMap.get(helpers, launch).pipe(
-      Effect.flatMap((client) => client.request("skills/list", { cwds: [cwd], forceReload: true })),
+    const [skillsResponse, pluginCatalog] = yield* RcMap.get(helpers, launch).pipe(
+      Effect.flatMap((client) =>
+        Effect.all(
+          [
+            client.request("skills/list", { cwds: [cwd], forceReload: true }),
+            readCodexPluginCatalog(client.request("plugin/installed", { cwds: [cwd] })),
+          ],
+          { concurrency: "unbounded" },
+        ),
+      ),
       Effect.scoped,
       // RcMap keeps a failed spawn, and a dead helper keeps failing; drop it so the retry respawns.
       Effect.onError(() => RcMap.invalidate(helpers, launch)),
       Effect.retry({ times: 1 }),
     );
-    return parseCodexSkillsListResponse(skillsResponse, cwd);
+    return { skills: parseCodexSkillsListResponse(skillsResponse, cwd), pluginCatalog };
   });
 });
 
@@ -1159,6 +1189,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       (models) => applyConfiguredCodexCyberAccess(models, snapshot),
     ),
     skills: snapshot.skills,
+    ...(snapshot.pluginCatalog === undefined ? {} : { pluginCatalog: snapshot.pluginCatalog }),
     slashCommands: [
       COMPACT_SLASH_COMMAND,
       {

@@ -127,8 +127,12 @@ function AgentActivity(
       : tint;
 
   const allDone = props.activeCount === 0;
-  const doneLabel = failedRow ? "Failed" : "Done";
-  const outcomeLabel = failedRow ? "Agent work failed" : "Agent work completed";
+  const doneLabel = failedRow ? "Failed" : row0?.status === "Woke" ? "Woke" : "Done";
+  const outcomeLabel = failedRow
+    ? "Agent work failed"
+    : row0?.status === "Woke"
+      ? "Thread woke"
+      : "Agent work completed";
 
   const agentWord = props.activeCount === 1 ? "agent" : "agents";
   const agentsLabel = allDone

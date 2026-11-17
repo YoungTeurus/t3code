@@ -120,6 +120,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Hide the switch when absent; older servers silently drop per-project provider patches. */
   projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
+  threadSnoozeDependency: Schema.optionalKey(Schema.Boolean),
   /** Serves `orchestration.forceStopThread`; hide Force stop where it is absent. */
   threadForceStop: Schema.optionalKey(Schema.Boolean),
   /** Every protocol-2 server sends this; older mobile builds still read it. */
@@ -222,7 +223,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
 export type ExecutionEnvironmentDescriptor = typeof ExecutionEnvironmentDescriptor.Type;
 
 export const RepositoryIdentityLocator = Schema.Struct({
-  source: Schema.Literal("git-remote"),
+  source: Schema.Literals(["git-remote", "arc"]),
   remoteName: TrimmedNonEmptyString,
   remoteUrl: TrimmedNonEmptyString,
 });

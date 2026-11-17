@@ -213,6 +213,7 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
+import * as ThreadSnoozeDependencyReactor from "./orchestration-v2/ThreadSnoozeDependencyReactor.ts";
 import * as IdleCompactionService from "./orchestration-v2/IdleCompactionService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -416,6 +417,7 @@ const layerRepositoryIdentityResolver = Layer.effect(
   Effect.gen(function* () {
     const registry = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
     return yield* RepositoryIdentityResolver.make({
+      resolveNative: yield* RepositoryIdentityResolver.makeNativeResolver,
       refine: Effect.fn(function* (identity: RepositoryIdentity) {
         for (const { kind } of BUILT_IN_SOURCE_CONTROL_DRIVER_LIST) {
           const provider = yield* registry.get(kind);
@@ -431,7 +433,10 @@ const layerRepositoryIdentityResolver = Layer.effect(
       }),
     });
   }),
-).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
+).pipe(
+  Layer.provide(Layer.merge(layerSourceControlProviderRegistry, layerVcsDriverRegistry)),
+  Layer.provide(ProcessRunner.layer),
+);
 
 const layerPullRequestService = PullRequestService.layer.pipe(
   Layer.provide(PullRequestProviderRegistry.layer),
@@ -493,6 +498,18 @@ const layerVcs = Layer.empty.pipe(
   Layer.provideMerge(layerProjectCloneTracker),
   Layer.provideMerge(
     VcsStatusBroadcaster.layer.pipe(
+      Layer.provide(
+        Layer.effect(
+          VcsStatusBroadcaster.VcsCheckoutIdentity,
+          Effect.gen(function* () {
+            const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+            return Effect.fn("VcsStatusBroadcaster.checkoutIdentity")(function* (cwd: string) {
+              const handle = yield* registry.detect({ cwd }).pipe(Effect.orElseSucceed(() => null));
+              return handle?.kind === "arc" ? `arc:${handle.repository.rootPath}` : cwd;
+            });
+          }),
+        ).pipe(Layer.provide(layerVcsDriverRegistry)),
+      ),
       Layer.provide(layerGitWorkflow),
       // The orchestration runtime also consumes the broadcaster (run
       // finalization), so the policy cannot read the store from the runtime's
@@ -675,6 +692,15 @@ const layerServerRestart = Layer.effect(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const service = yield* ThreadSnoozeDependencyReactor.ThreadSnoozeDependencyReactor;
+      yield* service.start();
+    }),
+  ).pipe(
+    Layer.provide(ThreadSnoozeDependencyReactor.layer),
+    Layer.provide(RuntimeLayer.layerEventSink),
+  ),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,

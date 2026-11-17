@@ -111,7 +111,9 @@ import {
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { makeVcsBackend } from "../vcs/VcsBackend.ts";
+import type * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import type * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -191,6 +193,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
   ) => Effect.Effect<OrchestratorMcpCreateThreadsResult, OrchestratorMcpFailure>;
+  readonly waitForTrigger: (
+    scope: McpInvocationScope,
+    input: { readonly reason: string },
+  ) => Effect.Effect<{ readonly waitingWhenTurnEnds: true }, OrchestratorMcpFailure>;
   readonly scheduleTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpScheduleTaskInput,
@@ -254,6 +260,8 @@ function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
       return failure("run_not_found", error.message);
     case "ThreadManagementThreadArchivedError":
     case "ThreadManagementWorktreeRestoreError":
+    case "ThreadManagementNoSteerableRunError":
+    case "ThreadManagementScheduledMessageSkippedError":
       return failure("thread_not_sendable", error.message);
     case "ThreadManagementNoSteerableRunError":
       return failure(
@@ -1264,7 +1272,7 @@ const make = Effect.gen(function* () {
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
-  const gitDriver = yield* GitVcsDriver.GitVcsDriver;
+  const gitDriver = yield* makeVcsBackend;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
@@ -2221,6 +2229,30 @@ const make = Effect.gen(function* () {
   });
 
   return OrchestratorMcpService.of({
+    waitForTrigger: Effect.fn("OrchestratorMcpService.waitForTrigger")(function* (scope, input) {
+      yield* requireCapability(scope);
+      const caller = yield* requireThreadScope(scope, "t3_trigger_wait");
+      const { tasks } = yield* scheduledTasks
+        .list()
+        .pipe(
+          Effect.mapError((error) =>
+            failure("orchestration_error", `Could not check automations: ${error.message}`),
+          ),
+        );
+      if (!tasks.some((task) => task.enabled && task.threadId === caller.thread.threadId)) {
+        return yield* failure(
+          "invalid_request",
+          "Waiting requires an enabled automation bound to this thread. Create or enable a scheduled task or webhook first. For human input, ask a question instead.",
+        );
+      }
+      return yield* threadManagement
+        .waitForTrigger({
+          threadId: caller.thread.threadId,
+          commandId: CommandId.make(`mcp:trigger-wait:${yield* requestKey(undefined)}`),
+          reason: input.reason,
+        })
+        .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+    }),
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
@@ -3399,6 +3431,13 @@ const make = Effect.gen(function* () {
         nextPosition: items.at(-1)?.position ?? null,
         hasMore: timeline.hasMore || (!newestFirst && items.length < timeline.items.length),
         earlierPosition: timeline.hasEarlier || start > 0 ? (items[0]?.position ?? null) : null,
+        ...(input.includeApprovalAttention === true
+          ? {
+              approvalAttention: yield* threadManagement
+                .approvalAttention(input.threadId)
+                .pipe(Effect.mapError(threadManagementFailure)),
+            }
+          : {}),
       } satisfies OrchestratorMcpThreadReadResult;
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
@@ -3457,7 +3496,8 @@ const make = Effect.gen(function* () {
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
       const { parent, target } = yield* loadScopedThread(scope, input.threadId, []);
-      const result = yield* threadManagement
+      const waiting = threadManagement
+
         .waitForThread({
           projectId: target.thread.projectId,
           threadId: input.threadId,
@@ -3469,6 +3509,70 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      const requestedAttention = input.afterApprovalAttentionSequence;
+      const initialAttention =
+        requestedAttention === undefined
+          ? undefined
+          : yield* threadManagement
+              .approvalAttention(input.threadId)
+              .pipe(Effect.mapError(threadManagementFailure));
+      const approvalWait =
+        requestedAttention === undefined || initialAttention === undefined
+          ? Effect.never
+          : initialAttention.lastAttentionSequence > requestedAttention ||
+              (input.afterApprovalPendingCount !== undefined &&
+                initialAttention.pendingApprovalCount !== input.afterApprovalPendingCount) ||
+              (input.afterApprovalAvailable !== undefined &&
+                initialAttention.available !== input.afterApprovalAvailable)
+            ? Effect.succeed(initialAttention)
+            : threadManagement
+                .streamStoredEventsFrom({ afterSequence: initialAttention.snapshotSequence })
+                .pipe(
+                  Stream.mapError(threadManagementFailure),
+                  Stream.filter(
+                    (stored) =>
+                      stored.event.type === "runtime-request.updated" ||
+                      stored.event.type === "thread.metadata-updated" ||
+                      stored.event.type === "subagent.updated" ||
+                      stored.event.type === "run.updated",
+                  ),
+                  Stream.mapEffect(() =>
+                    threadManagement
+                      .approvalAttention(input.threadId)
+                      .pipe(Effect.mapError(threadManagementFailure)),
+                  ),
+                  Stream.filter(
+                    (attention) =>
+                      attention.lastAttentionSequence > requestedAttention ||
+                      (input.afterApprovalPendingCount !== undefined &&
+                        attention.pendingApprovalCount !== input.afterApprovalPendingCount) ||
+                      (input.afterApprovalAvailable !== undefined &&
+                        attention.available !== input.afterApprovalAvailable),
+                  ),
+                  Stream.runHead,
+                  Effect.flatMap(
+                    Option.match({ onNone: () => Effect.never, onSome: Effect.succeed }),
+                  ),
+                );
+      const outcome = yield* Effect.raceFirst(
+        waiting.pipe(Effect.map((result) => ({ kind: "run" as const, result }))),
+        approvalWait.pipe(Effect.map((attention) => ({ kind: "attention" as const, attention }))),
+      );
+      const attentionRuns =
+        outcome.kind === "attention"
+          ? (yield* loadThreadRecords(input.threadId, ["runs"])).runs
+          : [];
+      const result =
+        outcome.kind === "run"
+          ? outcome.result
+          : {
+              run:
+                input.runId === undefined
+                  ? (attentionRuns.toSorted((a, b) => b.ordinal - a.ordinal)[0] ?? null)
+                  : (attentionRuns.find((run) => run.id === input.runId) ?? null),
+              timedOut: true,
+              resultRun: undefined,
+            };
       const status = result.run === null ? "idle" : runOutcome(result.run);
       const taskId = result.run?.delegatedTaskId;
       const ownedTask =
@@ -3497,6 +3601,16 @@ const make = Effect.gen(function* () {
         runId: result.run?.id ?? null,
         status,
         timedOut: result.timedOut,
+        ...(requestedAttention === undefined
+          ? {}
+          : {
+              approvalAttention:
+                outcome.kind === "attention"
+                  ? outcome.attention
+                  : yield* threadManagement
+                      .approvalAttention(input.threadId)
+                      .pipe(Effect.mapError(threadManagementFailure)),
+            }),
         ...(wakesCaller ? { next: ORCHESTRATOR_MCP_RUNNING_TASK_NEXT } : {}),
         ...(result.resultRun === undefined
           ? {}
@@ -3601,6 +3715,7 @@ export const layer: Layer.Layer<
   | ThreadManagementService.ThreadManagementService
   | ThreadLaunchService.ThreadLaunchService
   | GitVcsDriver.GitVcsDriver
+  | VcsDriverRegistry.VcsDriverRegistry
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService

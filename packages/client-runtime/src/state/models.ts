@@ -184,6 +184,8 @@ export interface EnvironmentThreadShell {
   readonly unsettledAt: string | null;
   readonly snoozedUntil: string | null;
   readonly snoozedAt: string | null;
+  readonly snoozeDependency?: OrchestrationV2ThreadShell["snoozeDependency"];
+  readonly snoozeDependencyWake?: OrchestrationV2ThreadShell["snoozeDependencyWake"];
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecovery | null;
   readonly pinnedAt: string | null;
   readonly autoSettleDisabledAt?: string | null;
@@ -339,6 +341,8 @@ export function presentThreadShell(
     unsettledAt: nullableIso(thread.unsettledAt ?? null),
     snoozedUntil: nullableIso(thread.snoozedUntil ?? null),
     snoozedAt: nullableIso(thread.snoozedAt ?? null),
+    snoozeDependency: thread.snoozeDependency ?? null,
+    snoozeDependencyWake: thread.snoozeDependencyWake ?? null,
     limitRecovery: thread.limitRecovery ?? null,
     pinnedAt: nullableIso(thread.pinnedAt ?? null),
     autoSettleDisabledAt: nullableIso(thread.autoSettleDisabledAt ?? null),
@@ -387,9 +391,14 @@ export function resolveThreadWorkingStartedAt(input: {
     "runId" | "startedAt" | "requestedAt" | "completedAt"
   > | null;
   readonly runtime: Pick<ThreadRuntimeSummary, "activeRunId" | "activityStartedAt"> | null;
+  readonly pendingBackgroundTasks?: EnvironmentThreadShell["pendingBackgroundTasks"];
 }): string | null {
   const valid = (value: string | null | undefined) =>
     value != null && Number.isFinite(Date.parse(value)) ? value : null;
+  const waitingSince = input.pendingBackgroundTasks?.find(
+    (task) => task.taskId === "trigger-wait",
+  )?.startedAt;
+  if (waitingSince !== undefined) return valid(waitingSince);
   if (input.runtime?.activityStartedAt !== undefined) return valid(input.runtime.activityStartedAt);
   const run = input.latestRun;
   if (run?.completedAt === null && run.runId === input.runtime?.activeRunId) {

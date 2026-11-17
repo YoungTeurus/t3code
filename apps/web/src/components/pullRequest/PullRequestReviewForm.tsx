@@ -17,6 +17,7 @@ import {
   pullRequestReviewKey,
   usePendingReviewComments,
   usePullRequestReviewStore,
+  hasStaleReviewComments,
 } from "./pullRequestReviewStore";
 import {
   PullRequestMarkdownTextarea,
@@ -53,6 +54,7 @@ export function PullRequestReviewForm({
   environmentId,
   active,
   reference,
+  headSha,
   completionScope,
   term,
   verdicts,
@@ -66,6 +68,7 @@ export function PullRequestReviewForm({
   /** False while the form stays mounted but hidden; dictation is cancelled then. */
   active: boolean;
   reference: PullRequestRef;
+  headSha?: string | undefined;
   completionScope: PullRequestCompletionScope | null;
   /** The host's word for a change request, as in "pull request". */
   term: string;
@@ -78,6 +81,7 @@ export function PullRequestReviewForm({
 }) {
   const [requestedVerdict, setRequestedVerdict] = useState<PullRequestReviewVerdict>("comment");
   const comments = usePendingReviewComments(reference);
+  const stale = hasStaleReviewComments(comments, headSha);
   const reviewKey = pullRequestReviewKey(reference);
   const body = usePullRequestReviewStore((store) => store.summaries[reviewKey] ?? "");
   const removeComments = usePullRequestReviewStore((store) => store.removeComments);
@@ -107,7 +111,12 @@ export function PullRequestReviewForm({
 
   const submit = async (verdict: (typeof VERDICTS)[number], text: string) => {
     const submittedComments = usePullRequestReviewStore.getState().drafts[reviewKey] ?? [];
-    if (pending || !canSubmit(verdict.value, text, submittedComments.length)) return;
+    if (
+      pending ||
+      hasStaleReviewComments(submittedComments, headSha) ||
+      !canSubmit(verdict.value, text, submittedComments.length)
+    )
+      return;
     const submittedBody = text;
     onPendingChange(true);
     const result = await submitReview({
@@ -115,8 +124,9 @@ export function PullRequestReviewForm({
       input: {
         ...reference,
         verdict: verdict.value,
+        ...(headSha ? { expectedHeadSha: headSha } : {}),
         body: submittedBody,
-        comments: submittedComments,
+        comments: submittedComments.map((comment) => ({ ...comment, clientId: comment.id })),
       },
     });
     onPendingChange(false);
@@ -177,7 +187,16 @@ export function PullRequestReviewForm({
         }}
       />
       <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-        <TextFieldSpeechControls speech={speech} disabled={pending} />
+        <div className="mr-auto flex min-w-0 flex-wrap items-center gap-1">
+          <TextFieldSpeechControls speech={speech} disabled={pending} />
+        </div>
+        {stale ? (
+          <p className="mr-auto text-xs text-warning-foreground">
+            This revision changed. Discard the old line comments and review the current diff before
+            submitting.
+          </p>
+        ) : null}
+
         {offered.length > 1 ? (
           <Select
             value={selectedVerdict?.value ?? null}
@@ -209,6 +228,7 @@ export function PullRequestReviewForm({
           disabled={
             speech.preparing ||
             pending ||
+            stale ||
             selectedVerdict === undefined ||
             (!canSubmit(selectedVerdict.value, body, comments.length) && !speech.blocksSubmission)
           }

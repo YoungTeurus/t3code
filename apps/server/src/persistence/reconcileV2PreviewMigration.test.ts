@@ -8,6 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
 import RemoveRedundantProjectionIndexes from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
+import ThreadSnoozeDependencies from "./ForkMigrations/F001_ThreadSnoozeDependencies.ts";
+import RemoteApprovalAttention from "./ForkMigrations/F002_RemoteApprovalAttention.ts";
 import OrchestrationV2 from "./Migrations/055_OrchestrationV2.ts";
 
 const seedPreview = Effect.gen(function* () {
@@ -213,3 +215,48 @@ describe("V2 preview upgrade", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
+
+it.effect.each([74, 81] as const)(
+  "upgrades the fork's colliding migration ids at %s without losing snooze or approval state",
+  (firstId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: firstId - 1 });
+      yield* Migrator.make({})({
+        loader: Migrator.fromRecord({
+          [`${firstId}_ThreadSnoozeDependencies`]: ThreadSnoozeDependencies,
+          [`${firstId + 1}_RemoteApprovalAttention`]: RemoteApprovalAttention,
+        }),
+      });
+      yield* sql`UPDATE thread_snooze_transition_cursor SET sequence = 42 WHERE id = 1`;
+      yield* sql`INSERT INTO thread_approval_attention(thread_id, last_attention_sequence) VALUES ('waiting-thread', 17)`;
+      yield* runMigrations();
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT sequence FROM thread_snooze_transition_cursor WHERE id = 1`,
+        [{ sequence: 42 }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT last_attention_sequence FROM thread_approval_attention WHERE thread_id = 'waiting-thread'`,
+        [{ last_attention_sequence: 17 }],
+      );
+      const history = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+      SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+    `;
+      assert.deepStrictEqual(
+        history.map((row) => [row.migration_id, row.name] as const),
+        migrationManifest,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id, name FROM fork_sql_migrations ORDER BY migration_id`,
+        [
+          { migration_id: 1, name: "ThreadSnoozeDependencies" },
+          { migration_id: 2, name: "RemoteApprovalAttention" },
+        ],
+      );
+      const columns = yield* sql<{
+        readonly name: string;
+      }>`PRAGMA table_info(orchestration_v2_projection_subagents)`;
+      assert.isTrue(columns.some((column) => column.name === "completion_delivery_state"));
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);

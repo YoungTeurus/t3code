@@ -5,7 +5,8 @@ import * as Layer from "effect/Layer";
 
 import * as SecretResolverLayer from "../secrets/SecretResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { makeVcsBackend } from "../vcs/VcsBackend.ts";
+import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { resolveSourceControlHostSecrets } from "./sourceControlHostSecrets.ts";
@@ -15,10 +16,12 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const process = yield* VcsProcess.VcsProcess;
-    const git = yield* GitVcsDriver.GitVcsDriver;
+    const git = yield* makeVcsBackend;
+    const config = yield* ServerConfig.ServerConfig;
     const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
     const secrets = yield* SecretResolver.SecretResolver;
     return SourceControlHost.SourceControlHost.of({
+      stateDirectory: config.stateDir,
       settings: {
         get: serverSettings.getSettings,
         getWithSecrets: (kind) =>

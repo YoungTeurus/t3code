@@ -44,6 +44,7 @@ import {
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
   resolveBuildOptions,
+  resolveGitBuildProvenance,
   stageWslRuntimeArchive,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
@@ -243,6 +244,62 @@ const makePackagedAppFixture = Effect.fn("test.makePackagedAppFixture")(function
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it.effect("records the build revision, tracked main and dirty state", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-build-provenance-" });
+      const git = (args: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          const child = yield* spawner.spawn(
+            ChildProcess.make("git", args, { cwd: root, stdout: "ignore", stderr: "ignore" }),
+          );
+          assert.equal(Number(yield* child.exitCode), 0);
+        });
+      yield* git(["init"]);
+      yield* fs.writeFileString(path.join(root, "source.txt"), "first");
+      yield* git(["add", "source.txt"]);
+      yield* git([
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "base",
+      ]);
+      const withoutMain = yield* resolveGitBuildProvenance(root);
+      assert.isNull(withoutMain.trackedMainCommit);
+      assert.isNull(withoutMain.trackedMainIsAncestor);
+      yield* git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      const clean = yield* resolveGitBuildProvenance(root);
+      assert.match(clean.commit ?? "", /^[0-9a-f]{40}$/);
+      assert.equal(clean.trackedMainCommit, clean.commit);
+      assert.isTrue(clean.trackedMainIsAncestor);
+      assert.isFalse(clean.dirty);
+      yield* fs.writeFileString(path.join(root, "source.txt"), "modified");
+      assert.isTrue((yield* resolveGitBuildProvenance(root)).dirty);
+      yield* git([
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-am",
+        "next",
+      ]);
+      const child = yield* resolveGitBuildProvenance(root);
+      assert.notEqual(child.commit, child.trackedMainCommit);
+      assert.isTrue(child.trackedMainIsAncestor);
+      assert.isFalse(child.dirty);
+      yield* git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+      yield* git(["checkout", "--detach", "HEAD^"]);
+      const behind = yield* resolveGitBuildProvenance(root);
+      assert.isNull(behind.branch);
+      assert.isFalse(behind.trackedMainIsAncestor);
+    }),
+  );
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

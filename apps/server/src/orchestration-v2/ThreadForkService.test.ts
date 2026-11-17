@@ -61,6 +61,7 @@ function makeSourceThread(): OrchestrationV2AppThread {
     lastVisitedAt: null,
     snoozedUntil,
     snoozedAt,
+    scheduledQueueSkippedCount: 7,
     deletedAt: null,
   };
 }
@@ -161,6 +162,7 @@ it.effect("resets a fork's pin, snooze, settle and delegation state but keeps it
 
     assert.isNull(result.targetThread.snoozedUntil);
     assert.isNull(result.targetThread.snoozedAt);
+    assert.equal(result.targetThread.scheduledQueueSkippedCount ?? 0, 0);
     assert.isNull(result.targetThread.lastSnoozeWakeAt);
     assert.isNull(result.targetThread.pinnedAt);
     assert.isNull(result.targetThread.pinOrderKey);

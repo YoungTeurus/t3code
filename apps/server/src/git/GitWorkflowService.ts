@@ -1,7 +1,9 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
 
 import {
   GitManagerError,
@@ -32,12 +34,19 @@ import {
 import * as GitManager from "./GitManager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { makeVcsBackend } from "../vcs/VcsBackend.ts";
+import { makeWorkspaceLease } from "../workspace/workspaceLease.ts";
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
   {
+    readonly recoverWorktree?: (input: {
+      readonly cwd: string;
+      readonly path: string;
+      readonly branch: string;
+    }) => Effect.Effect<boolean, GitCommandError>;
     readonly repositoryRoot: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
+
     readonly hasCommit: (input: {
       readonly cwd: string;
       readonly refName: string;
@@ -190,16 +199,27 @@ function nonRepositoryListRefs(): VcsListRefsResult {
 /** @public */
 export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
-  const git = yield* GitVcsDriver.GitVcsDriver;
+  const git = yield* makeVcsBackend;
   const gitManager = yield* GitManager.GitManager;
+  const workspaceLease = yield* makeWorkspaceLease;
   const fileSystem = yield* FileSystem.FileSystem;
-
-  // Nested projects and path aliases must share the checkout's branch-mutation lease.
-  const withCheckoutLease = <A, E, R>(rootPath: string, effect: Effect.Effect<A, E, R>) =>
-    fileSystem.realPath(rootPath).pipe(
-      Effect.orElseSucceed(() => rootPath),
-      Effect.flatMap((cwd) => withWorkspaceLease(cwd, effect)),
+  const withCheckoutLease = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
+    fileSystem.realPath(cwd).pipe(
+      Effect.orElseSucceed(() => cwd),
+      Effect.flatMap((canonical) => workspaceLease(canonical, effect)),
+      Effect.mapError((cause) =>
+        PlatformError.isPlatformError(cause)
+          ? new GitCommandError({
+              cwd,
+              operation: "GitWorkflowService.checkoutLease",
+              command: "vcs-route",
+              detail: "Could not identify the checkout for a safe VCS operation.",
+              cause,
+            })
+          : cause,
+      ),
     );
+  const path = yield* Path.Path;
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -288,9 +308,56 @@ export const make = Effect.gen(function* () {
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
   return GitWorkflowService.of({
+    recoverWorktree: Effect.fn("GitWorkflowService.recoverWorktree")(function* (input) {
+      const handle = yield* ensureGitCommand("GitWorkflowService.recoverWorktree", input.cwd);
+      if (handle.kind !== "arc" || !handle.driver.workspace || !handle.driver.operations)
+        return false;
+      const result = yield* Effect.gen(function* () {
+        const entries = yield* handle.driver.workspace!.list(input.cwd);
+        const selected = entries.filter(
+          (entry) => input.path === entry.root || input.path.startsWith(`${entry.root}${path.sep}`),
+        );
+        if (selected.length !== 1)
+          return yield* new GitCommandError({
+            cwd: input.cwd,
+            operation: "GitWorkflowService.recoverWorktree",
+            command: "arc-wt",
+            detail: "The Arc workspace is not uniquely registered.",
+          });
+        const source = yield* handle.driver.operations!.context(input.cwd);
+        const workspace = yield* handle.driver.workspace!.ensure({
+          cwd: input.cwd,
+          taskKey: selected[0]!.name,
+          branch: input.branch,
+          baseRevision: source.head,
+          path: input.path,
+        });
+        if (workspace.cwd !== input.path)
+          return yield* new GitCommandError({
+            cwd: input.cwd,
+            operation: "GitWorkflowService.recoverWorktree",
+            command: "arc-wt",
+            detail: "The registered Arc workspace project path changed.",
+          });
+        return true;
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              cwd: input.cwd,
+              operation: "GitWorkflowService.recoverWorktree",
+              command: "arc-wt",
+              detail: "The registered Arc workspace could not be recovered safely.",
+              cause,
+            }),
+        ),
+      );
+      return result;
+    }),
     repositoryRoot: Effect.fn("GitWorkflowService.repositoryRoot")(function (cwd) {
       return registry.detect({ cwd }).pipe(
-        Effect.map((handle) => (handle?.kind === "git" ? handle.repository.rootPath : null)),
+        Effect.map((handle) => handle?.repository.rootPath ?? null),
+
         Effect.mapError(
           (cause) =>
             new GitManagerError({
@@ -304,15 +371,24 @@ export const make = Effect.gen(function* () {
     }),
     hasCommit: Effect.fn("GitWorkflowService.hasCommit")(function (input) {
       return ensureGitCommand("GitWorkflowService.hasCommit", input.cwd).pipe(
-        Effect.andThen(
-          git.execute({
-            operation: "GitWorkflowService.hasCommit",
-            cwd: input.cwd,
-            args: ["rev-parse", "--verify", `${input.refName}^{commit}`],
-            allowNonZeroExit: true,
-          }),
+        Effect.flatMap((handle) =>
+          handle.kind === "arc"
+            ? git.resolveCommit({ cwd: input.cwd, revision: input.refName }).pipe(
+                Effect.as(true),
+                Effect.catchIf(
+                  (error) => error.reason === "ref_not_found",
+                  () => Effect.succeed(false),
+                ),
+              )
+            : git
+                .execute({
+                  operation: "GitWorkflowService.hasCommit",
+                  cwd: input.cwd,
+                  args: ["rev-parse", "--verify", `${input.refName}^{commit}`],
+                  allowNonZeroExit: true,
+                })
+                .pipe(Effect.map((result) => result.exitCode === 0)),
         ),
-        Effect.map((result) => result.exitCode === 0),
       );
     }),
     hasRefNamed: Effect.fn("GitWorkflowService.hasRefNamed")(function (input) {
@@ -320,19 +396,24 @@ export const make = Effect.gen(function* () {
       return /[*?[\\]/.test(input.refName)
         ? Effect.succeed(false)
         : ensureGitCommand("GitWorkflowService.hasRefNamed", input.cwd).pipe(
-            Effect.andThen(
-              git.execute({
-                operation: "GitWorkflowService.hasRefNamed",
-                cwd: input.cwd,
-                args: [
-                  "for-each-ref",
-                  "--count=1",
-                  "--format=%(refname)",
-                  `refs/**/${input.refName}`,
-                ],
-              }),
+            Effect.flatMap((handle) =>
+              handle.kind === "arc"
+                ? git
+                    .resolveBranchName(input.cwd, input.refName)
+                    .pipe(Effect.map((name) => name !== null))
+                : git
+                    .execute({
+                      operation: "GitWorkflowService.hasRefNamed",
+                      cwd: input.cwd,
+                      args: [
+                        "for-each-ref",
+                        "--count=1",
+                        "--format=%(refname)",
+                        `refs/**/${input.refName}`,
+                      ],
+                    })
+                    .pipe(Effect.map((result) => result.stdout.trim().length > 0)),
             ),
-            Effect.map((result) => result.stdout.trim().length > 0),
           );
     }),
     status: Effect.fn("GitWorkflowService.status")(function (input) {
@@ -355,6 +436,9 @@ export const make = Effect.gen(function* () {
       if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.currentBranch", cwd))) {
         return null;
       }
+      const handle = yield* ensureGit("GitWorkflowService.currentBranch", cwd);
+      if (handle.kind === "arc")
+        return (yield* git.statusDetailsLocal(cwd, { includeDivergence: false })).branch;
       const result = yield* git.execute({
         operation: "GitWorkflowService.currentBranch",
         cwd,

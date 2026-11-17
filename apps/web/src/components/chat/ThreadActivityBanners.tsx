@@ -210,7 +210,11 @@ export function backgroundWorkNowItem(input: {
           task.label
         ),
       activity: subagent?.progress?.replace(/\s+/gu, " ").trim() || null,
-      startedAtMs: item?.startedAt ? DateTime.toEpochMillis(item.startedAt) : null,
+      startedAtMs: item?.startedAt
+        ? DateTime.toEpochMillis(item.startedAt)
+        : task.startedAt === undefined
+          ? null
+          : Date.parse(task.startedAt),
       updatedAtMs: subagent ? DateTime.toEpochMillis(subagent.updatedAt) : 0,
     };
   });

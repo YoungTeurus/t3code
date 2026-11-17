@@ -209,6 +209,22 @@ function harness() {
 }
 
 describe("Android delivery routing", () => {
+  it("sends one correctly labelled wake while the waiting thread is working", () => {
+    const wake = { ...state, snoozeWake: { eventId: "wake-1", occurredAt: state.updatedAt } };
+    const previousAggregate = aggregateFor([state]);
+    const nextAggregate = aggregateFor([wake]);
+    const input = { previousAggregate, nextAggregate, preferences, nowMs: 0 };
+    expect(FcmDeliveries.androidAlertForAggregate(input)?.alert_body).toBe("Woke: Project");
+    expect(
+      FcmDeliveries.androidAlertForAggregate({ ...input, previousAggregate: nextAggregate }),
+    ).toBeNull();
+    expect(
+      FcmDeliveries.androidAlertForAggregate({
+        ...input,
+        preferences: { ...preferences, notifyOnCompletion: false },
+      }),
+    ).toBeNull();
+  });
   const secondState: RelayAgentActivityState = {
     ...state,
     threadId: ThreadId.make("second-thread"),

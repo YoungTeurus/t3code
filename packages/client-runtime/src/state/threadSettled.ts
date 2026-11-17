@@ -68,6 +68,8 @@ export function hasQueuedTurnStart(
 }
 
 export interface ThreadSnoozeShell extends QueuedThreadShell {
+  readonly snoozeDependency?: { readonly visibility: "hidden" | "visible" } | null | undefined;
+  readonly snoozeDependencyWake?: { readonly occurredAt: string } | null | undefined;
   readonly source?: Pick<EnvironmentThreadShell["source"], "pendingRuntimeRequest">;
   readonly snoozedUntil?: string | null;
   readonly snoozedAt?: string | null;
@@ -157,6 +159,9 @@ export function effectiveSnoozed(
   shell: ThreadSnoozeShell,
   options: { readonly now: string },
 ): boolean {
+  if (shell.snoozeDependency != null) {
+    return shell.snoozeDependency.visibility === "hidden" && !threadRaisedHandWhileSnoozed(shell);
+  }
   if (shell.snoozedUntil == null) return false;
   const wakeAtMs = Date.parse(shell.snoozedUntil);
   if (Number.isNaN(wakeAtMs)) return false;
@@ -168,6 +173,7 @@ export function threadWokeAt(
   shell: ThreadSnoozeShell,
   options: { readonly now: string },
 ): string | null {
+  if (shell.snoozeDependencyWake != null) return shell.snoozeDependencyWake.occurredAt;
   if (shell.snoozedUntil == null) return null;
   const wakeAtMs = Date.parse(shell.snoozedUntil);
   if (Number.isNaN(wakeAtMs)) return null;

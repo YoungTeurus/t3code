@@ -374,10 +374,50 @@ function SidebarThreadTooltip({
   );
 }
 
-function SnoozeMenuButton(props: {
+function SnoozeDependencyLink(props: {
+  title: string;
+  until: "settled" | "completed";
+  onOpen: () => void;
+}) {
+  const event = props.until === "settled" ? "settles" : "succeeds";
+  const description =
+    props.until === "settled"
+      ? `Wakes when ${props.title} settles`
+      : `Wakes after a successful run of ${props.title}`;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={`Open ${props.title}. ${description}`}
+            onClick={(clickEvent) => {
+              clickEvent.stopPropagation();
+              props.onOpen();
+            }}
+            className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-xs text-info-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          />
+        }
+      >
+        <AlarmClockIcon aria-hidden className="size-3 shrink-0" />
+        <span className="min-w-0 truncate" dir={textDirection(props.title)}>
+          {props.title}
+        </span>
+        <span className="shrink-0 opacity-70">{event}</span>
+      </TooltipTrigger>
+      <TooltipPopup side="top" className="max-w-72 break-words">
+        {description}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
+export function SnoozeMenuButton(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSnooze: (preset: Pick<SnoozePreset, "snoozedUntil">) => void;
+  onSnoozeUntilThread: () => void;
+  snoozeDependencySupported: boolean;
   timestampFormat: TimestampFormat;
   environmentId: EnvironmentId;
 }) {
@@ -409,6 +449,16 @@ function SnoozeMenuButton(props: {
         <TooltipPopup>Snooze thread</TooltipPopup>
       </Tooltip>
       <MenuPopup side="bottom" align="end">
+        {props.snoozeDependencySupported ? (
+          <MenuItem
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onSnoozeUntilThread();
+            }}
+          >
+            Until another thread…
+          </MenuItem>
+        ) : null}
         {presets.map((preset) => (
           <MenuItem
             key={preset.id}
@@ -556,6 +606,7 @@ type SidebarThreadRowProps = {
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
+  snoozeDependencySupported: boolean;
   pinningSupported: boolean;
   isPinned: boolean;
   sortable?: SortableThreadRowBag | undefined;
@@ -563,6 +614,7 @@ type SidebarThreadRowProps = {
   dragOverPinned: boolean;
   sweepAction: SidebarSweepAction | null;
   snoozeWakeLabelText: string | null;
+  snoozeDependencyTitle: string | null;
   wokeAt: string | null;
   isActive: boolean;
   // Set on the active row only; scrolls it into view when a reveal is owed.
@@ -602,6 +654,7 @@ type SidebarThreadRowProps = {
   ) => void;
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: Pick<SnoozePreset, "snoozedUntil">) => void;
+  onSnoozeUntilThread: (threadRef: ScopedThreadRef) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
@@ -745,6 +798,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     wokeAtDate !== null &&
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
+  const snoozeDependency =
+    variantAction === "unsnooze" &&
+    thread.snoozeDependency != null &&
+    props.snoozeDependencyTitle !== null
+      ? { ...thread.snoozeDependency, title: props.snoozeDependencyTitle }
+      : null;
   const shouldRecede = shouldRecedeSidebarThread({
     status,
     isUnread,
@@ -1295,20 +1354,32 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : (
                 <span
                   className={cn(
-                    "relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end",
+                    "relative ml-auto flex h-6 min-w-8 items-center justify-end",
+                    // Caps the dependency link so the row's own title keeps most of the width.
+                    snoozeDependency ? "min-w-0 max-w-[60%] gap-0.5" : "shrink-0",
                     props.sweepAction !== null && "hidden",
                     jumpHintLabel && JUMP_HINT_SLOT_CLASS_NAME,
                   )}
                 >
                   <span
                     className={cn(
-                      "inline-flex justify-end tabular-nums text-secondary-label transition-opacity",
-                      !isWoke && "group-any-hover/sidebar-row:opacity-0",
+                      "inline-flex min-w-0 justify-end tabular-nums text-secondary-label transition-opacity",
+                      !isWoke && !snoozeDependency && "group-any-hover/sidebar-row:opacity-0",
                     )}
                   >
-                    {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
+                    {snoozeDependency ? (
+                      <SnoozeDependencyLink
+                        title={snoozeDependency.title}
+                        until={snoozeDependency.until}
+                        onOpen={() =>
+                          onThreadActivate({
+                            environmentId: thread.environmentId,
+                            threadId: snoozeDependency.targetThreadId,
+                          })
+                        }
+                      />
+                    ) : variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
                       <span className="inline-flex items-center gap-1 text-xs text-info-foreground tabular-nums">
-                        {/* The clock tells a wake time from an age at a glance. */}
                         <AlarmClockIcon aria-hidden className="size-3" />
                         {props.snoozeWakeLabelText}
                       </span>
@@ -1362,6 +1433,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         className={cn(
                           "pointer-events-none absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-any-hover/sidebar-row:pointer-events-auto group-any-hover/sidebar-row:opacity-100",
                           isWoke && "group-any-hover/sidebar-row:static",
+                          snoozeDependency &&
+                            "shrink-0 focus-visible:static group-any-hover/sidebar-row:static",
                         )}
                       >
                         <AlarmClockOffIcon className="mb-px size-3" />
@@ -1582,6 +1655,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           open={snoozeMenuOpen}
                           onOpenChange={setSnoozeMenuOpen}
                           onSnooze={handleSnoozePreset}
+                          onSnoozeUntilThread={() => props.onSnoozeUntilThread(threadRef)}
+                          snoozeDependencySupported={props.snoozeDependencySupported}
                           timestampFormat={props.timestampFormat}
                           environmentId={thread.environmentId}
                         />

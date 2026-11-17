@@ -147,7 +147,11 @@ function makeHarness(options: HarnessOptions = {}) {
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
     layerRegistry,
-    { databaseLayer: layerDatabase, runEffectWorker: false },
+    {
+      databaseLayer: layerDatabase,
+      runEffectWorker: false,
+      ...(options.serverSettings === undefined ? {} : { serverSettings: options.serverSettings }),
+    },
   );
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
@@ -360,6 +364,7 @@ it.effect.each(
         Layer.mergeAll(
           harness.layer,
           NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
@@ -427,6 +432,7 @@ it.effect(
         Layer.mergeAll(
           harness.layer,
           NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
           Scheduler.layer,
           Layer.mock(SecretRequests.SecretRequests)({}),
           ManagedPolicy.layerTest(),
@@ -3308,3 +3314,75 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect.each(["skip_new", "replace_oldest"] as const)(
+  "treats scheduled queue %s and replays as successful delivery",
+  (overflow) => {
+    const harness = makeHarness({ serverSettings: { scheduledQueueOverflow: overflow } });
+    const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          harness.layer,
+          NodeCrypto.layer,
+          ManagedPolicy.layerTest(),
+          Scheduler.layer,
+          Layer.mock(SecretRequests.SecretRequests)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:skip-start",
+          thread: "thread:skip-scheduled",
+          message: "Start",
+        }),
+      );
+      const { task } = yield* tasks.upsert({
+        id: ScheduledTaskId.make("task:skip"),
+        title: "Check",
+        prompt: "Fresh check",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId,
+        threadId: launched.threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const sendInput = {
+        projectId,
+        commandId: CommandId.make("queue-old"),
+        threadId: launched.threadId,
+        messageId: MessageId.make("old"),
+        scheduledTaskId: task.id,
+        text: "Old check",
+        attachments: [],
+        mode: "queue" as const,
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+      };
+      const queued = yield* threads.sendToThread(sendInput);
+      const result = yield* tasks.runNow({ id: task.id });
+      assert.equal(result.task.lastRunStatus, "succeeded");
+      assert.isNull(result.task.lastRunError);
+      assert.equal(result.threadId, launched.threadId);
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      const waiting = projection.runs.filter((run) => run.status === "queued");
+      assert.equal(waiting.length, 1);
+      assert.equal(waiting[0]!.id === queued.run.id, overflow === "skip_new");
+      const replay = yield* threads.sendToThread(sendInput);
+      assert.equal(replay.run.id, queued.run.id);
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).thread.scheduledQueueSkippedCount,
+        1,
+      );
+    }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+  },
+);

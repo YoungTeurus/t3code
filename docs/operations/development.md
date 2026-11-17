@@ -275,6 +275,11 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+Each build writes a `*.provenance.json` alongside its artifacts with the source commit, branch,
+dirty state, and locally tracked `origin/main` commit and ancestry. A dirty build contains changes
+that the commit alone does not identify; the tracked ref is current only after a fetch. When
+`reusedBundles` is true, the source data describes packaging time, not the existing bundles.
+
 ### Prepared server bytecode
 
 Native macOS and Windows desktop artifact builds, and native Linux x64 and ARM64 builds, generate server

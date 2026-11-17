@@ -13,7 +13,11 @@ import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
-import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  useThreadReportedModelSelection,
+  useThreadShell,
+} from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
@@ -423,6 +427,12 @@ function ThreadDetailBody(
   if (sidebarSearchActive && composerOwnsKeyboard) setComposerOwnsKeyboard(false);
   const navigation = useNavigation();
   const openLinkedThread = useOpenLinkedThread();
+  const dependency = props.selectedThread.snoozeDependency ?? null;
+  const dependencyTarget = useThreadShell(
+    dependency === null
+      ? null
+      : { environmentId: props.environmentId, threadId: dependency.targetThreadId },
+  );
   const openInspector = useOpenThreadInspector();
   const { session: voiceInputSession } = useGlobalVoiceInput();
   const reportedModelSelection = useThreadReportedModelSelection(props.selectedThreadDetailRef);
@@ -843,19 +853,37 @@ function ThreadDetailBody(
         },
       };
     }
-    if (contentPresentationKind === "ready" && (lifecycleSnoozed || settled || woke)) {
-      const state = lifecycleSnoozed ? "snoozed" : settled ? "settled" : "woke";
+    if (
+      contentPresentationKind === "ready" &&
+      (lifecycleSnoozed || settled || woke || dependency !== null)
+    ) {
+      const state =
+        lifecycleSnoozed || dependency !== null ? "snoozed" : settled ? "settled" : "woke";
       const label =
-        lifecycleSnoozed && snoozedUntil !== null
-          ? `Snoozed, wakes in ${snoozeWakeLabel(snoozedUntil, { now: lifecycleNow })}`
-          : settled
-            ? "Settled"
-            : "Woke from snooze";
-      const actionLabel = lifecycleSnoozed ? "Wake now" : settled ? "Un-settle" : "Dismiss";
+        dependency !== null
+          ? `Waiting for ${dependency.until === "settled" ? "settlement" : "successful run"}: ${dependencyTarget?.title ?? "thread"}`
+          : lifecycleSnoozed && snoozedUntil !== null
+            ? `Snoozed, wakes in ${snoozeWakeLabel(snoozedUntil, { now: lifecycleNow })}`
+            : settled
+              ? "Settled"
+              : props.selectedThread.snoozeDependencyWake
+                ? `Waiting ended: ${props.selectedThread.snoozeDependencyWake.reason}`
+                : "Woke from snooze";
+      const actionLabel =
+        lifecycleSnoozed || dependency !== null ? "Wake now" : settled ? "Un-settle" : "Dismiss";
       return {
         kind: "lifecycle",
         state,
         label,
+        ...(dependency
+          ? {
+              onPress: () =>
+                openLinkedThread({
+                  environmentId: props.environmentId,
+                  threadId: dependency.targetThreadId,
+                }),
+            }
+          : {}),
         action: {
           label: statusPending
             ? lifecycleSnoozed
@@ -867,7 +895,9 @@ function ThreadDetailBody(
           accessibilityLabel: actionLabel,
           disabled: !props.canOperateThread || statusPending,
           onPress: () =>
-            void runStatusAction(lifecycleSnoozed ? "wake" : settled ? "unsettle" : "dismiss"),
+            void runStatusAction(
+              lifecycleSnoozed || dependency !== null ? "wake" : settled ? "unsettle" : "dismiss",
+            ),
         },
       };
     }

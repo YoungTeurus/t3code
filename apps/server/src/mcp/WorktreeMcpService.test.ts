@@ -90,6 +90,7 @@ const project: Project = {
 } as Project;
 
 interface HarnessOptions {
+  readonly vcsKind?: "arc";
   readonly git?: Partial<GitWorkflowService.GitWorkflowService["Service"]>;
   readonly thread?: ThreadFixture | null;
   readonly threadReadError?: "projection" | "dispatch";
@@ -202,7 +203,10 @@ const makeHarness = (options: HarnessOptions = {}) => {
       ? (Effect.fail("simulated fetch failure") as never)
       : options.worktreeBaseMissing
         ? Effect.succeed(null)
-        : Effect.succeed({ commitSha: "abc123", remoteRefName: "origin/dev" }),
+        : Effect.succeed({
+            commitSha: "abc123",
+            remoteRefName: options.vcsKind === "arc" ? "arcadia/trunk" : "origin/dev",
+          }),
   );
   const createWorktree = vi.fn(
     (input: { readonly newRefName?: string | undefined; readonly path: string | null }) =>
@@ -241,6 +245,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
   const localStatus = vi.fn((_: unknown) =>
     Effect.succeed({
       isRepo: options.notARepo !== true,
+      ...(options.vcsKind ? { vcsKind: options.vcsKind } : {}),
       hasPrimaryRemote: true,
       isDefaultRef: false,
       refName: options.currentBranch === undefined ? "dev" : options.currentBranch,
@@ -379,6 +384,30 @@ const runStatus = (harness: ReturnType<typeof makeHarness>) =>
 const decodeHandoffInput = Schema.decodeUnknownEffect(WorktreeMcpHandoffInput);
 
 describe("t3_worktree_handoff", () => {
+  it.effect("uses the native Arc branch name with a separately resolved workspace revision", () => {
+    const harness = makeHarness({
+      vcsKind: "arc",
+      git: {
+        createWorktree: (input) =>
+          Effect.sync(() => {
+            expect(input.baseRefName).toBe("trunk");
+            expect(input.refName).toBe("abc123");
+            return {
+              worktree: { path: "/arc-workspaces/task/service", refName: input.newRefName! },
+            };
+          }),
+      },
+    });
+    return Effect.gen(function* () {
+      const result = yield* runHandoff(harness, {
+        branch: "arc-task",
+        baseRef: "trunk",
+        startFromOrigin: true,
+      });
+      expect(result.worktreePath).toBe("/arc-workspaces/task/service");
+      expect(result.startedFromOrigin).toBe(true);
+    });
+  });
   // regression: #22971 a separate send let the detach settle the run before its follow-up existed
   it.effect("commits the continuation with the thread binding", () => {
     const harness = makeHarness();

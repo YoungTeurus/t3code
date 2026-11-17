@@ -220,6 +220,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "autoSettleDisabledAt"
   | "snoozedUntil"
   | "snoozedAt"
+  | "snoozeDependency"
   | "latestRunId"
   | "latestRunRequestedAt"
   | "latestRunStartedAt"
@@ -476,6 +477,7 @@ export interface ActiveShellIndexEntry extends Pick<
 > {
   /** False only when no run, request, work item, or watch can make the shell live. */
   readonly mayBeLive: boolean;
+  readonly hasSnoozeDependency: boolean;
   /** Whether it delegated a task to a linked environment, whose clients nest that task under it. */
   readonly hasRemoteTasks: boolean;
 }
@@ -1115,6 +1117,8 @@ export type AgentAwarenessThread = ProjectThreadAwarenessV2Input["thread"] &
     | "activeRunId"
     | "latestRunId"
     | "hasActionableProposedPlan"
+    | "snoozeDependencyWake"
+    | "lastVisitedAt"
   >;
 
 type ShellThreadRow = {
@@ -1782,6 +1786,7 @@ export function threadShellFromProjection(
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     runs,
     pullRequests: projection.thread.pullRequests,
+    triggerWait: projection.thread.triggerWait,
   });
   return {
     createdBy: projection.thread.createdBy,
@@ -1867,6 +1872,9 @@ export function threadShellFromProjection(
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
+    snoozeDependency: projection.thread.snoozeDependency ?? null,
+    snoozeDependencyWake: projection.thread.snoozeDependencyWake ?? null,
+    triggerWait: projection.thread.triggerWait ?? null,
     pinnedAt: projection.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
@@ -2164,6 +2172,9 @@ function shellFromState(input: {
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
+    snoozeDependency: input.state.thread.snoozeDependency ?? null,
+    snoozeDependencyWake: input.state.thread.snoozeDependencyWake ?? null,
+    triggerWait: input.state.thread.triggerWait ?? null,
     pinnedAt: input.state.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,
@@ -4811,6 +4822,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE CASE WHEN json_valid(payload_json)
                   THEN json_type(payload_json, '$.delegatedCompletion.delivery') = 'object'
                   ELSE 0 END
+                UNION
+                SELECT task.thread_id FROM orchestration_v2_projection_subagents task
+                JOIN orchestration_v2_projection_runs run
+                  ON run.run_id = json_extract(task.payload_json, '$.runId')
+                 AND run.thread_id = task.thread_id
+                WHERE run.status = 'cancelled'
+                  AND json_extract(task.payload_json, '$.origin') = 'app_owned'
+                  AND json_extract(task.payload_json, '$.completionWake') = 'settled_only'
+                  AND task.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+                  AND json_extract(task.payload_json, '$.result') IS NOT NULL
+                  AND COALESCE(json_extract(task.payload_json, '$.completionDelivery.state'), 'pending') = 'pending'
               `;
             case "subagent-results":
               return sql`
@@ -8372,6 +8394,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   autoSettleDisabledAt: thread.autoSettleDisabledAt ?? null,
                   snoozedUntil: thread.snoozedUntil ?? null,
                   snoozedAt: thread.snoozedAt ?? null,
+                  snoozeDependency: thread.snoozeDependency ?? null,
                   status,
                   latestRunId,
                   latestRunRequestedAt:
@@ -8408,6 +8431,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     activeProviderThreadId: thread.activeProviderThreadId,
                     hasActiveRun: false,
                     pullRequests: thread.pullRequests,
+                    triggerWait: thread.triggerWait,
                   }),
                 } satisfies ProjectionSettlementCandidate;
               }),
@@ -8620,6 +8644,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             activeProviderThreadId: thread.activeProviderThreadId,
             hasActiveRun: row.active_run_id !== null,
             pullRequests: thread.pullRequests,
+            triggerWait: thread.triggerWait,
           }),
         ];
         return {
@@ -8903,6 +8928,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               status: state.latestRunStatus,
               activityRunStatus: state.activityRunStatus,
               latestRunCompletedAt: state.latestRunCompletedAt,
+              snoozeDependencyWake: state.thread.snoozeDependencyWake,
+              lastVisitedAt: state.thread.lastVisitedAt,
               latestRunStopRequested: state.latestRunStopRequested,
               latestRunBackgroundWake: state.latestRunBackgroundWake,
               pendingRuntimeRequest: state.pendingRuntimeRequest,
@@ -8954,6 +8981,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         readonly pinned_at: string | null;
         readonly pin_order_key: string | null;
         readonly snoozed_until: string | null;
+        readonly has_snooze_dependency: number;
         readonly may_be_live: number;
         readonly has_remote_tasks: number;
       }>`
@@ -8969,6 +8997,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           json_extract(t.payload_json, '$.pinnedAt') AS pinned_at,
           json_extract(t.payload_json, '$.pinOrderKey') AS pin_order_key,
           json_extract(t.payload_json, '$.snoozedUntil') AS snoozed_until,
+          json_type(t.payload_json, '$.snoozeDependency') = 'object' AS has_snooze_dependency,
           -- A superset of isLiveSubagentShell: the sources of its run status, pending request,
           -- and pending background work.
           (
@@ -9029,6 +9058,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         pinOrderKey: row.pin_order_key,
         snoozedUntil: row.snoozed_until === null ? null : DateTime.makeUnsafe(row.snoozed_until),
         mayBeLive: row.may_be_live === 1,
+        hasSnoozeDependency: row.has_snooze_dependency === 1,
         hasRemoteTasks: row.has_remote_tasks === 1,
       }));
     }, Effect.mapError(shellSnapshotReadError));

@@ -337,7 +337,11 @@ export const CodexDriver: ProviderDriver<
               environment: processEnv,
             }).pipe(Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv))),
           ]).pipe(
-            Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })),
+            Effect.map(([machineSnapshot, capabilities]) => ({
+              ...machineSnapshot,
+              skills: capabilities.skills,
+              pluginCatalog: capabilities.pluginCatalog,
+            })),
             Effect.mapError(
               (cause) =>
                 new ProviderDriverError({

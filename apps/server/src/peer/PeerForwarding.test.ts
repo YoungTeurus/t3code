@@ -29,6 +29,7 @@ import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -231,7 +232,12 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       ),
-      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
+        ),
+      ),
       Layer.provide(boxProjects(seen)),
       Layer.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-box-" }).pipe(
@@ -285,7 +291,12 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
+      ),
+    ),
     Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-laptop-" }).pipe(

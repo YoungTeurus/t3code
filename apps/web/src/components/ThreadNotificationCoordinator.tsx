@@ -143,19 +143,21 @@ export function startThreadNotifications(
     const { notificationMode: mode, inAppNotificationsEnabled } = getClientSettings();
     const active = activeThread();
     const title =
-      kind === "completion"
-        ? "Thread completed"
-        : status === "approval"
-          ? "Approval needed"
-          : status === "limited"
-            ? "Usage limit reached"
-            : status === "failed"
-              ? "Thread failed"
-              : status === "request"
-                ? "Guest request"
-                : "Input needed";
+      kind === "wake"
+        ? "Waiting thread is ready"
+        : kind === "completion"
+          ? "Thread completed"
+          : status === "approval"
+            ? "Approval needed"
+            : status === "limited"
+              ? "Usage limit reached"
+              : status === "failed"
+                ? "Thread failed"
+                : status === "request"
+                  ? "Guest request"
+                  : "Input needed";
     if (hasNotificationSound(mode)) {
-      void playNotificationSound(kind, () =>
+      void playNotificationSound(kind === "wake" ? "completion" : kind, () =>
         hasNotificationSound(getClientSettings().notificationMode),
       );
     }
@@ -168,13 +170,18 @@ export function startThreadNotifications(
       const toastKey = threadKey({ environmentId, threadId: thread.id });
       const toastId: ToastId = toastManager.add({
         onRemove: (): void => forgetToast(toastKey, toastId),
-        type: kind === "completion" ? "success" : status === "failed" ? "error" : "warning",
+        type:
+          kind === "completion" || kind === "wake"
+            ? "success"
+            : status === "failed"
+              ? "error"
+              : "warning",
         title,
         description: thread.title,
         data: {
           hideCopyButton: true,
           leadingIcon:
-            kind === "completion" ? (
+            kind === "completion" || kind === "wake" ? (
               <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
             ) : status === "approval" ? (
               <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
@@ -294,6 +301,7 @@ export function startThreadNotifications(
         settled,
         completedAt: settled ? completedAt : null,
         backgroundWake: rawThread.latestRunBackgroundWake === true,
+        dependencyWakeId: thread.snoozeDependencyWake?.eventId ?? null,
       };
       next.set(thread.id, state);
       changed.push([prior, state]);

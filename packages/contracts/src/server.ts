@@ -127,12 +127,28 @@ export const ServerProviderSkill = Schema.Struct({
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 
+export const ServerProviderPlugin = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  source: TrimmedNonEmptyString,
+});
+export type ServerProviderPlugin = typeof ServerProviderPlugin.Type;
+
+export const ServerProviderPluginCatalog = Schema.Struct({
+  status: Schema.Literals(["ready", "error", "unsupported"]),
+  plugins: Schema.Array(ServerProviderPlugin),
+  message: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderPluginCatalog = typeof ServerProviderPluginCatalog.Type;
+
 export const ServerProviderWorkspaceSnapshot = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   checkedAt: IsoDateTime,
   slashCommands: Schema.Array(ServerProviderSlashCommand),
   slashCommandsPending: Schema.optional(Schema.Boolean),
   skills: Schema.Array(ServerProviderSkill),
+  pluginCatalog: Schema.optionalKey(ServerProviderPluginCatalog),
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
   // Absent means the provider's machine `models`, which keeps most snapshots small.
   models: Schema.optional(Schema.Array(ServerProviderModel)),
@@ -275,6 +291,7 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  pluginCatalog: Schema.optionalKey(ServerProviderPluginCatalog),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   /**
    * Set when the server rescanned a workspace after a session start and its skills or commands

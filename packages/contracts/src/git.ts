@@ -182,6 +182,7 @@ export const VcsRemoveWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   path: TrimmedNonEmptyStringSchema,
   force: Schema.optional(Schema.Boolean),
+  explicit: Schema.optional(Schema.Boolean),
 });
 export type VcsRemoveWorktreeInput = typeof VcsRemoveWorktreeInput.Type;
 
@@ -222,6 +223,7 @@ const VcsStatusChangeRequest = Schema.Struct({
 
 const VcsStatusLocalShape = {
   isRepo: Schema.Boolean,
+  vcsKind: Schema.optional(VcsDriverKind),
   sourceControlProvider: Schema.optional(SourceControlProviderInfo),
   hasPrimaryRemote: Schema.Boolean,
   isDefaultRef: Schema.Boolean,

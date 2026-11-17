@@ -163,6 +163,7 @@ export function isAutoSettlementCandidate(
   nowMs: number,
 ): boolean {
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
+  if (thread.snoozeDependency != null) return false;
   if (thread.pinnedAt != null || thread.autoSettleDisabledAt != null) return false;
   if (thread.pendingRuntimeRequest !== null) return false;
   // A guest is waiting on the owner; settling would hide the Request.
@@ -183,6 +184,7 @@ export function isSnoozed(
     ProjectionStore.ProjectionSettlementCandidate,
     | "snoozedUntil"
     | "snoozedAt"
+    | "snoozeDependency"
     | "latestRunCompletedAt"
     | "status"
     | "pendingRuntimeRequest"
@@ -190,6 +192,19 @@ export function isSnoozed(
   >,
   nowMs: number,
 ): boolean {
+  if (thread.snoozeDependency != null) {
+    const snoozedAtMs = toMillis(thread.snoozedAt);
+    const completedAtMs = toMillis(thread.latestRunCompletedAt);
+    return (
+      thread.snoozeDependency.visibility === "hidden" &&
+      thread.pendingRuntimeRequest === null &&
+      (thread.pendingGuestMessageCount ?? 0) === 0 &&
+      !(
+        thread.status === "failed" &&
+        (snoozedAtMs === null || (completedAtMs !== null && completedAtMs > snoozedAtMs))
+      )
+    );
+  }
   const snoozedUntilMs = toMillis(thread.snoozedUntil);
   if (snoozedUntilMs === null || snoozedUntilMs <= nowMs) return false;
   // Same as the client: a waiting guest message wakes the thread, and the snooze stays stored.

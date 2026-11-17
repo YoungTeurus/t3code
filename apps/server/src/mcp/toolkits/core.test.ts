@@ -47,6 +47,7 @@ import * as ServerConfig from "../../config.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import type * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
@@ -72,6 +73,7 @@ import * as PeerLinks from "../../peer/PeerLinks.ts";
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
 );
 
 const declaredFailure = (result: McpSchema.CallToolResult) => {
@@ -146,6 +148,70 @@ it.effect("checks capability through the production registration", () =>
     ),
   ),
 );
+
+it.effect("lets an agent configure a thread dependency", () => {
+  const commands: Array<{
+    readonly type: string;
+    readonly targetThreadId?: string;
+    readonly until?: string;
+    readonly expectedDependencyId?: string | undefined;
+  }> = [];
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({
+        name: "t3_thread_organize",
+        arguments: {
+          action: "snooze-until-thread",
+          threadId: "waiting",
+          targetThreadId: "target",
+          until: "completed",
+          expectedDependencyId: "previous-wait",
+        },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, clientScope("auto")),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).toBe(false);
+    expect(commands).toMatchObject([
+      {
+        type: "thread.snooze-until-thread",
+        targetThreadId: "target",
+        until: "completed",
+        expectedDependencyId: "previous-wait",
+      },
+    ]);
+  }).pipe(
+    Effect.provide(
+      layerThreadToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed(McpToolAccessTestkit.liveThreadShell(id, { runtimeMode: "auto" })),
+            getProjectThreadRecords: (id) =>
+              Effect.succeed({
+                thread: {
+                  id,
+                  projectId: "project",
+                  runtimeMode: "auto",
+                  interactionMode: "default",
+                  deletedAt: null,
+                },
+              } as never),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return { sequence: 7, storedEvents: [] };
+              }),
+          }),
+        ),
+      ),
+    ),
+  );
+});
 
 it.effect("an answered question reports already answered instead of not found", () => {
   const shell = McpToolAccessTestkit.liveThreadShell(threadId);

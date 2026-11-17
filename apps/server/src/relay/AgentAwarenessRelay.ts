@@ -106,11 +106,17 @@ function shouldPublishAgentAwarenessEvent(
     case "subagent.updated":
     case "provider-thread.updated":
       return true;
+    case "thread.unsnoozed":
+      return (
+        typeof event.payload === "object" &&
+        event.payload !== null &&
+        "snoozeDependencyWake" in event.payload &&
+        event.payload.snoozeDependencyWake != null
+      );
     // Unsettling must not re-alert a dismissed result.
     case "thread.unsettled":
     case "thread.guest-share-updated":
     case "thread.snoozed":
-    case "thread.unsnoozed":
     case "thread.auto-settle-set":
     case "thread.pinned":
     case "thread.unpinned":
@@ -321,6 +327,7 @@ const waitingApprovalId = (thread: AgentAwarenessThread | null) =>
 
 function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly environmentId: EnvironmentId;
+  readonly startedAt: number;
   readonly thread: Option.Option<AgentAwarenessThread>;
   readonly project: Option.Option<Project>;
   readonly pendingSubagentRequest: SubagentRequestAwareness | null;
@@ -347,15 +354,41 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
       reason: "project-not-found",
     };
   }
+  const wake = input.thread.value.snoozeDependencyWake;
+  const wakeAt = wake == null ? NaN : Date.parse(wake.occurredAt);
+  const visitedAt =
+    input.thread.value.lastVisitedAt == null
+      ? 0
+      : DateTime.toEpochMillis(input.thread.value.lastVisitedAt);
+  const recentWake =
+    wake != null && wakeAt > input.startedAt && wakeAt > visitedAt
+      ? { eventId: wake.eventId, occurredAt: wake.occurredAt }
+      : undefined;
   const awarenessInput = {
     environmentId: input.environmentId,
     project: input.project.value,
     thread: input.thread.value,
   };
-  const state = projectThreadAwarenessV2({
-    ...awarenessInput,
+  const projected = projectThreadAwarenessV2({
+    environmentId: input.environmentId,
+    project: input.project.value,
+    thread: input.thread.value,
     pendingSubagentRequest: input.pendingSubagentRequest,
   });
+  const state: RelayAgentActivityState | null =
+    projected === null && recentWake !== undefined
+      ? {
+          environmentId: input.environmentId,
+          threadId: input.thread.value.id,
+          projectTitle: input.project.value.title,
+          threadTitle: input.thread.value.title,
+          phase: "completed",
+          headline: "Thread woke",
+          modelTitle: input.thread.value.modelSelection.model,
+          updatedAt: recentWake.occurredAt,
+          deepLink: `/threads/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.thread.value.id)}`,
+        }
+      : projected;
   const childDrivesWait =
     input.pendingSubagentRequest !== null &&
     state?.phase !== projectThreadAwarenessV2(awarenessInput)?.phase;
@@ -363,7 +396,9 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
     projectId: input.thread.value.projectId,
     state: snoozedCompletion(input.thread.value, state)
       ? null
-      : sanitizeRelayAgentActivityState(state),
+      : sanitizeRelayAgentActivityState(
+          state == null || recentWake === undefined ? state : { ...state, snoozeWake: recentWake },
+        ),
     subagentWait: childDrivesWait ? input.pendingSubagentRequest : null,
     reason: "snapshot",
   };
@@ -593,16 +628,38 @@ export const make = Effect.gen(function* () {
     const project = Option.isSome(thread)
       ? yield* projects.getById(thread.value.projectId)
       : Option.none<Project>();
-    const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
+    let snapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
+      startedAt,
       thread,
       project,
       pendingSubagentRequest: yield* currentSubagentRequestFor(threadId),
     });
+    if (snapshot.state?.snoozeWake !== undefined) {
+      if (cachedRelayClient === undefined) cachedRelayClient = yield* makeRelayClient(relayConfig);
+      const supportsWake = yield* cachedRelayClient.health.health().pipe(
+        Effect.map((health) => health.capabilities?.snoozeWakeNotifications === true),
+        Effect.timeout("10 seconds"),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!supportsWake && Option.isSome(thread) && Option.isSome(project)) {
+        snapshot = {
+          ...snapshot,
+          state: sanitizeRelayAgentActivityState(
+            projectThreadAwarenessV2({
+              environmentId,
+              project: project.value,
+              thread: thread.value,
+            }),
+          ),
+        };
+      }
+    }
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
+      snapshot.state.snoozeWake === undefined &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {
       if (Option.isNone(thread) || !terminalWorkSinceStart(thread.value, startedAt)) return;
@@ -626,7 +683,9 @@ export const make = Effect.gen(function* () {
     // Confirm tombstones over live state to avoid removing active cards.
     // Confirm completion: a run can end moments before its continuation starts, and the relay
     // alerts on every move into completed.
-    const requiresConfirmation = snapshot.state === null || snapshot.state?.phase === "completed";
+    const requiresConfirmation =
+      snapshot.state === null ||
+      (snapshot.state?.phase === "completed" && snapshot.state.snoozeWake === undefined);
     if (requiresConfirmation) {
       if (snapshot.state?.phase === "completed") heldCompletions.add(threadId);
       const nowMs = (yield* DateTime.now).epochMilliseconds;
@@ -662,6 +721,7 @@ export const make = Effect.gen(function* () {
         thread.value.settledOverride === "settled"
           ? resolveAgentAwarenessRelayPublishSnapshot({
               environmentId,
+              startedAt,
               thread: Option.some({ ...thread.value, settledOverride: null }),
               project,
               pendingSubagentRequest: null,

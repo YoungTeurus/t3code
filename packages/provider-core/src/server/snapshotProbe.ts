@@ -6,6 +6,7 @@ import type {
   ServerProvider,
   ServerProviderAuth,
   ServerProviderSkill,
+  ServerProviderPluginCatalog,
   ServerProviderSlashCommand,
   ServerProviderModel,
   ServerProviderUpdateRequiredModel,
@@ -274,6 +275,7 @@ export function buildServerProvider(input: {
   updateRequiredModels?: ReadonlyArray<ServerProviderUpdateRequiredModel>;
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  pluginCatalog?: ServerProviderPluginCatalog;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
@@ -313,6 +315,7 @@ export function buildServerProvider(input: {
       : {}),
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
+    ...(input.pluginCatalog === undefined ? {} : { pluginCatalog: input.pluginCatalog }),
     ...(input.probe.usageLimits ? { usageLimits: input.probe.usageLimits } : {}),
     ...(versionAdvisory ? { versionAdvisory } : {}),
   };

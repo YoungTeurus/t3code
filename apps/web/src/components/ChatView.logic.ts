@@ -1542,6 +1542,7 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
       hasActiveRun: false,
       runs: projection.runs,
       pullRequests: projection.thread.pullRequests,
+      triggerWait: projection.thread.triggerWait,
     }),
   ];
 }

@@ -32,6 +32,8 @@ import type * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { projectMutationOperation } from "../project/ProjectMutation.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
@@ -204,7 +206,11 @@ const projectCommandUuid = SecureRandom.SecureRandom.pipe(
 const makeProjectCliRuntimeLayer = (layerProjectService: typeof RuntimeLayer.layerProjectService) =>
   layerProjectService.pipe(
     Layer.provideMerge(ProjectEnrichmentService.layer),
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
+    Layer.provideMerge(
+      RepositoryIdentityResolver.layer.pipe(
+        Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+      ),
+    ),
     Layer.provideMerge(
       ProjectFaviconResolver.layer.pipe(
         Layer.provide(WorkspacePaths.layer),

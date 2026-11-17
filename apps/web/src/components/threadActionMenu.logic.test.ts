@@ -27,6 +27,18 @@ const baseState: ThreadActionMenuState = {
 
 describe("buildThreadActionMenuItems", () => {
   it.each([false, true])(
+    "offers dependency snooze only when the server supports it: %s",
+    (supported) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        supports: { ...baseState.supports, snoozeDependency: supported },
+      });
+      const children = items.find((item) => item.id === "snooze")?.children ?? [];
+      expect(children.some((item) => item.id === "snooze:thread")).toBe(supported);
+      expect(children.some((item) => item.id === "snooze:custom")).toBe(true);
+    },
+  );
+  it.each([false, true])(
     "disables both lifecycle directions without permission (reversed: %s)",
     (reversed) => {
       const items = buildThreadActionMenuItems({

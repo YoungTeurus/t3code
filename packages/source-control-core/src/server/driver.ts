@@ -6,8 +6,10 @@ import type {
   SourceControlSignInResult,
 } from "@t3tools/contracts";
 import type * as Digest from "effect/crypto/Digest";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
 import type { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
@@ -77,7 +79,9 @@ export type SourceControlDriverServices =
   | SourceControlRateLimit.SourceControlRateLimit
   | HttpClient.HttpClient
   | FileSystem.FileSystem
-  | Digest.Digest;
+  | Path.Path
+  | Digest.Digest
+  | SecureRandom.SecureRandom;
 
 export interface SourceControlDriver {
   readonly kind: SourceControlProviderKind;

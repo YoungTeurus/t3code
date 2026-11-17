@@ -26,6 +26,7 @@ import { ArrowDownUpIcon, LayersIcon, Plug2Icon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState, type ComponentProps } from "react";
 
 import {
+  pullRequestListReadError,
   collectPullRequestListFacets,
   narrowPullRequestsToFilters,
   mergePullRequestDiffStats,
@@ -1230,9 +1231,15 @@ export function PullRequestsPage() {
       {panelToggleControls}
     </div>
   );
-  const listError = listQuery.error
-    ? `${environmentLabels.get(listQuery.error.environmentId) || "Environment"}: ${listQuery.error.message}`
-    : null;
+  const listError = pullRequestListReadError(
+    listQuery.error
+      ? {
+          ...listQuery.error,
+          message: `${environmentLabels.get(listQuery.error.environmentId) || "Environment"}: ${listQuery.error.message}`,
+        }
+      : null,
+    answered?.errors ?? [],
+  );
   const carriedToNothing =
     shownCount === 0 &&
     typedQuery.length === 0 &&
@@ -1295,7 +1302,7 @@ export function PullRequestsPage() {
 
       {listError && shownCount > 0 ? (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
-          <span>{listError} Showing the last pull requests loaded.</span>
+          <span>{listError} Some pull requests could not be loaded.</span>
           <Button size="xs" variant="outline" onClick={() => listQuery.refresh()}>
             Retry
           </Button>

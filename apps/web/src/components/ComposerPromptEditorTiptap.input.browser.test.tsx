@@ -7,7 +7,7 @@ import {
   useRetainedContextPayloads,
 } from "./chat/composerContextUndo";
 
-import type { ServerProviderSkill } from "@t3tools/contracts";
+import type { ServerProviderSkill, ServerProviderPlugin } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { redoDepth, undoDepth } from "@tiptap/pm/history";
 import { NodeSelection } from "@tiptap/pm/state";
@@ -48,16 +48,40 @@ const babysit: ServerProviderSkill = {
   enabled: true,
 };
 
+it.each([false, true])(
+  "preserves a plugin mention through deletion and undo (rich text: %s)",
+  async (richTextEnabled) => {
+    const value = "Use [@plugin-TelegramEve](plugin://messages@personal) now";
+    await using screen = await mountEditor(value, richTextEnabled, [], undefined, [
+      { id: "messages@personal", name: "TelegramEve", source: "personal" },
+    ]);
+    const { editor } = screen;
+    await expect.element(screen.getByText("TelegramEve", { exact: true })).toBeVisible();
+    await act(async () => {
+      editor.view.focus();
+      editor.commands.setTextSelection({ from: 5, to: 6 });
+    });
+    await userEvent.keyboard("{Backspace}");
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("Use  now");
+    await act(async () => {
+      editor.commands.undo();
+    });
+    expect(serializeEditorDoc(editor.state.doc).value).toBe(value);
+  },
+);
+
 function Composer({
   value,
   richTextEnabled,
   skills,
+  plugins,
   onChange,
   onCommandKeyDown = () => false,
 }: {
   value: string;
   richTextEnabled: boolean;
   skills: ReadonlyArray<ServerProviderSkill>;
+  plugins: ReadonlyArray<ServerProviderPlugin>;
   onChange?: ComposerPromptEditorProps["onChange"] | undefined;
   onCommandKeyDown?: ComposerPromptEditorProps["onCommandKeyDown"] | undefined;
 }) {
@@ -70,6 +94,7 @@ function Composer({
       richTextEnabled={richTextEnabled}
       contextRecords={new Map()}
       skills={skills}
+      plugins={plugins}
       disabled={false}
       placeholder=""
       onChange={(...args) => {
@@ -87,6 +112,7 @@ function composer(
   richTextEnabled = true,
   skills: ReadonlyArray<ServerProviderSkill> = [],
   onChange?: ComposerPromptEditorProps["onChange"],
+  plugins: ReadonlyArray<ServerProviderPlugin> = [],
   onCommandKeyDown?: ComposerPromptEditorProps["onCommandKeyDown"],
 ) {
   return (
@@ -94,6 +120,7 @@ function composer(
       value={value}
       richTextEnabled={richTextEnabled}
       skills={skills}
+      plugins={plugins}
       onChange={onChange}
       onCommandKeyDown={onCommandKeyDown}
     />
@@ -344,7 +371,7 @@ it.each([
       ),
     };
     const composerCommand = vi.fn(() => composerClaimsKey);
-    await using screen = await mountEditor("word", true, [], undefined, composerCommand);
+    await using screen = await mountEditor("word", true, [], undefined, [], composerCommand);
     const { editor } = screen;
     await act(async () => {
       editor.commands.focus();

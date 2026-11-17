@@ -53,6 +53,7 @@ import {
 } from "~/composer-rich-text";
 import { collectInlineContextIds } from "~/lib/composerContextReferences";
 import { composerMathRanges } from "@t3tools/shared/composerInlineTokens";
+import { collectPluginMentions } from "./providerPluginMentions";
 
 export type SkillMeta = { label: string; description: string | null };
 
@@ -806,6 +807,16 @@ function atomJsonForSegment(
   segment: Exclude<ReturnType<typeof splitPromptIntoComposerSegments>[number], { type: "text" }>,
   chips: ChipResolver,
 ): AtomJson | null {
+  if (segment.type === "plugin") {
+    return {
+      type: "composer-plugin",
+      attrs: {
+        pluginId: segment.pluginId,
+        label: segment.label,
+        source: segment.source,
+      },
+    };
+  }
   if (segment.type === "mention") {
     return {
       type: "composer-mention",
@@ -934,7 +945,17 @@ export function buildTiptapContent(
   const atomSources: string[] = [];
   const literal = value.slice(0, options?.literalLength ?? 0);
   const remainder = value.slice(literal.length);
-  const formulas = composerMathRanges(remainder);
+  let mathSource = remainder;
+  for (const plugin of collectPluginMentions(remainder)) {
+    mathSource =
+      mathSource.slice(0, plugin.start) +
+      "x".repeat(plugin.source.length) +
+      mathSource.slice(plugin.end);
+  }
+  const formulas = composerMathRanges(mathSource).map((range) => ({
+    ...range,
+    source: remainder.slice(range.start, range.end),
+  }));
   let offset = 0;
   const chunks: Array<{ text: string } | { source: string }> = [];
   for (const formula of formulas) {
@@ -1196,6 +1217,7 @@ function readAtomSource(node: ProseMirrorNode): string {
   const attrs = node.attrs as Record<string, unknown>;
   switch (node.type.name) {
     case "composer-mention":
+    case "composer-plugin":
     case "composer-model":
     case "composer-citation":
     case "composer-context-reference":

@@ -171,12 +171,19 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     if (branch === null) return yield* recreateScratchFolder(thread, worktreePath);
     const exists = yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true));
     const leftover = exists && (yield* isLeftoverFolder(worktreePath));
-    if ((exists && !leftover) || !(yield* isManagedWorktreePath(worktreePath))) return;
     const project = yield* projects.getById(thread.projectId).pipe(
       Effect.map(Option.getOrUndefined),
       Effect.orElseSucceed(() => undefined),
     );
     if (project === undefined) return;
+    if (
+      yield* (
+        gitWorkflow.recoverWorktree?.({ cwd: project.workspaceRoot, path: worktreePath, branch }) ??
+          Effect.succeed(false)
+      )
+    )
+      return;
+    if ((exists && !leftover) || !(yield* isManagedWorktreePath(worktreePath))) return;
     yield* Effect.logWarning("recreating missing worktree", {
       threadId: thread.id,
       worktreePath,

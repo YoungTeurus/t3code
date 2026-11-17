@@ -32,6 +32,7 @@ export interface QueuedThreadRun {
 }
 
 export interface ThreadQueueWorkflowState {
+  readonly scheduledQueueSkippedCount: number;
   readonly activeRun: Run | null;
   readonly queuedRuns: ReadonlyArray<QueuedThreadRun>;
   readonly isHeld: boolean;
@@ -170,6 +171,8 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
   });
 
   return {
+    scheduledQueueSkippedCount:
+      queuedRuns.length > 0 ? (projection.thread.scheduledQueueSkippedCount ?? 0) : 0,
     activeRun,
     queuedRuns,
     isHeld: projection.runs.some((run) => run.status === "queued" && run.queueHeld === true),

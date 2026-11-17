@@ -78,6 +78,7 @@ export function idleCompactionWindow(
       providerThreads,
       turnItems,
       activeProviderThreadId: thread.activeProviderThreadId,
+      triggerWait: thread.triggerWait,
     }).length > 0
   )
     return null;

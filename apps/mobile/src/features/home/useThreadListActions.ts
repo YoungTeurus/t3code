@@ -3,7 +3,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
 import { showThreadUndoNotice } from "./thread-undo-notice";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Haptics from "expo-haptics";
 import { useRef } from "react";
@@ -11,6 +11,7 @@ import { useRef } from "react";
 import { withThreadDismissal } from "./thread-dismissal";
 import * as Dialog from "../../components/ui/Dialog";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { refreshArchivedThreadsForEnvironment } from "../archive/useArchivedThreadSnapshots";
 import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -117,6 +118,7 @@ function useThreadActionExecutor(
     thread: EnvironmentThreadShell,
     onStarted?: () => void,
     restoreUnsettledAt?: string | null,
+    commandId?: CommandId,
   ) => {
     if (!checkThreadOperationPermission(thread, actionFailureTitle(action))) return false;
     const key = scopedThreadKey(thread.environmentId, thread.id);
@@ -172,7 +174,7 @@ function useThreadActionExecutor(
                       : deleteMutation
               )({
                 environmentId: thread.environmentId,
-                input: { threadId: thread.id },
+                input: { threadId: thread.id, ...(commandId === undefined ? {} : { commandId }) },
               }),
         (result) => result._tag === "Success",
       );
@@ -238,6 +240,9 @@ export function useThreadListActions(): {
 } {
   const executeAction = useThreadActionExecutor();
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
+  const undoSnoozeDependencyMutation = useAtomCommand(threadEnvironment.undoSnoozeDependency, {
+    reportFailure: false,
+  });
   const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
   const pinMutation = useAtomCommand(threadEnvironment.pin, { reportFailure: false });
   const unpinMutation = useAtomCommand(threadEnvironment.unpin, { reportFailure: false });
@@ -259,6 +264,7 @@ export function useThreadListActions(): {
     action: "Settled" | "Snoozed" | "Unpinned",
     claim: ReturnType<typeof ThreadUndo.begin>,
     plan: ThreadUndo.ThreadUndoPlan,
+    expectedCommandId?: CommandId,
   ) =>
     showThreadUndoNotice({
       action,
@@ -269,6 +275,25 @@ export function useThreadListActions(): {
             plan,
             async (step) => {
               switch (step.action) {
+                case "restore-dependency": {
+                  const result = await undoSnoozeDependencyMutation({
+                    environmentId: thread.environmentId,
+                    input: {
+                      threadId: thread.id,
+                      dependency: step.dependency,
+                      expectedCommandId: expectedCommandId!,
+                    },
+                  });
+                  if (result._tag === "Failure") {
+                    const error = Cause.squash(result.cause);
+                    Dialog.alert(
+                      "Could not restore wait",
+                      error instanceof Error ? error.message : "Try again.",
+                    );
+                    return false;
+                  }
+                  return true;
+                }
                 case "unsettle":
                   return unsettleThread(thread, step.restoreUnsettledAt);
                 case "unsnooze":
@@ -316,14 +341,21 @@ export function useThreadListActions(): {
   const settleThread = async (thread: EnvironmentThreadShell) => {
     const key = scopedThreadKey(thread.environmentId, thread.id);
     const plan = ThreadUndo.planThreadUndo("settle", thread);
+    const commandId = CommandId.make(uuidv4());
     let claim: ReturnType<typeof ThreadUndo.begin> | undefined;
-    const succeeded = await executeAction("settle", thread, () => {
-      ThreadUndo.invalidate("pin", key);
-      ThreadUndo.invalidate("snooze", key);
-      claim = ThreadUndo.begin("settle", key);
-    });
+    const succeeded = await executeAction(
+      "settle",
+      thread,
+      () => {
+        ThreadUndo.invalidate("pin", key);
+        ThreadUndo.invalidate("snooze", key);
+        claim = ThreadUndo.begin("settle", key);
+      },
+      undefined,
+      commandId,
+    );
     if (claim) {
-      if (succeeded) offerUndo(thread, "Settled", claim, plan);
+      if (succeeded) offerUndo(thread, "Settled", claim, plan, commandId);
       else claim.finish();
     }
     return succeeded;
@@ -355,6 +387,7 @@ export function useThreadListActions(): {
 
       selectionHaptic();
       const claim = ThreadUndo.begin("snooze", key);
+      const commandId = CommandId.make(uuidv4());
       const result = await withThreadDismissal(
         key,
         () =>
@@ -363,6 +396,7 @@ export function useThreadListActions(): {
             input: {
               threadId: thread.id,
               snoozedUntil,
+              commandId,
             },
           }),
         (result) => result._tag === "Success",
@@ -378,7 +412,7 @@ export function useThreadListActions(): {
         );
         return false;
       }
-      offerUndo(thread, "Snoozed", claim, ThreadUndo.planThreadUndo("snooze"));
+      offerUndo(thread, "Snoozed", claim, ThreadUndo.planThreadUndo("snooze", thread), commandId);
       return true;
     })();
     snoozeInFlightThreadKeys.current.delete(key);

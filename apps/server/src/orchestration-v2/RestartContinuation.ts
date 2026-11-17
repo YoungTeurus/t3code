@@ -55,6 +55,8 @@ export function restartContinuationBlocked(
     thread.archivedAt !== null ||
     thread.deletedAt !== null ||
     thread.settledOverride === "settled" ||
+    thread.snoozeDependency != null ||
+    (thread.triggerWait?.runId === source.id && source.status === "completed") ||
     (thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now))
   )
     return true;

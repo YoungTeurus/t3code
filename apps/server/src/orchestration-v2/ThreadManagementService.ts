@@ -119,6 +119,10 @@ function existingThreadIdsForCommand(
       return [];
     case "thread.fork":
       return [command.sourceThreadId];
+    case "thread.snooze-until-thread":
+      return command.threadId === command.targetThreadId
+        ? [command.threadId]
+        : [command.threadId, command.targetThreadId];
     case "thread.merge_back":
       return command.sourceThreadId === command.targetThreadId
         ? [command.sourceThreadId]
@@ -311,6 +315,15 @@ export class ThreadManagementProjectThreadsListError extends Schema.TaggedError<
   }
 }
 
+export class ThreadManagementScheduledMessageSkippedError extends Schema.TaggedError<ThreadManagementScheduledMessageSkippedError>()(
+  "ThreadManagementScheduledMessageSkippedError",
+  { threadId: ThreadId, messageId: MessageId },
+) {
+  override get message(): string {
+    return "The scheduled message was skipped because its queue limit was reached.";
+  }
+}
+
 export class ThreadManagementDurableRunProjectionError extends Schema.TaggedError<ThreadManagementDurableRunProjectionError>()(
   "ThreadManagementDurableRunProjectionError",
   {
@@ -379,6 +392,7 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementProjectionLoadError,
   ThreadManagementProjectThreadsListError,
   ThreadManagementDurableRunProjectionError,
+  ThreadManagementScheduledMessageSkippedError,
   ThreadManagementProviderInstanceDisabledError,
   ThreadManagementWorktreeRestoreError,
 ]);
@@ -496,6 +510,16 @@ export interface ThreadManagementServiceShape {
   readonly stopWorkflow: (
     input: OrchestrationV2StopWorkflowInput,
   ) => Effect.Effect<void, OrchestrationV2StopWorkflowError>;
+  readonly waitForTrigger: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+    readonly reason: string;
+  }) => Effect.Effect<
+    { readonly waitingWhenTurnEnds: true },
+    | Orchestrator.OrchestratorV2Error
+    | ThreadManagementProviderInstanceDisabledError
+    | ThreadManagementBackgroundWaitError
+  >;
   /**
    * Kills the thread's agent for a provider that no longer responds, then ends
    * its turn as interrupted. Never kills a process other working threads share.
@@ -521,6 +545,10 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
+  readonly approvalAttention: Orchestrator.OrchestratorV2["Service"]["approvalAttention"];
+  readonly remoteApprovalObservation: Orchestrator.OrchestratorV2["Service"]["remoteApprovalObservation"];
+  readonly remoteApprovalTasks: Orchestrator.OrchestratorV2["Service"]["remoteApprovalTasks"];
+  readonly registerRemoteApprovalPreflight: Orchestrator.OrchestratorV2["Service"]["registerRemoteApprovalPreflight"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly cancelDelegatedTask: Orchestrator.OrchestratorV2["Service"]["cancelDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
@@ -944,6 +972,20 @@ const make = Effect.gen(function* () {
       turnItemTypes: ["user_message"],
     });
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
+    if (
+      input.scheduledTaskId !== undefined &&
+      message === undefined &&
+      dispatched.storedEvents.some(
+        ({ event }) =>
+          event.type === "thread.metadata-updated" &&
+          (event.payload.scheduledQueueSkippedCount ?? 0) > 0,
+      )
+    ) {
+      return yield* new ThreadManagementScheduledMessageSkippedError({
+        threadId: input.threadId,
+        messageId: input.messageId,
+      });
+    }
     const run =
       message?.runId === null || message?.runId === undefined
         ? undefined
@@ -955,10 +997,20 @@ const make = Effect.gen(function* () {
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    const acceptedScheduledQueueEntry =
+      input.scheduledTaskId !== undefined &&
+      dispatched.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.created" &&
+          event.payload.id === run?.id &&
+          event.payload.status === "queued",
+      );
     if (
       message === undefined ||
       run === undefined ||
-      (turnItem === null && run.status !== "queued")
+      (turnItem === null &&
+        run.status !== "queued" &&
+        !(run.status === "cancelled" && acceptedScheduledQueueEntry))
     ) {
       return yield* new ThreadManagementDurableRunProjectionError({
         threadId: input.threadId,
@@ -1553,6 +1605,25 @@ const make = Effect.gen(function* () {
     (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
   );
 
+  const waitForTrigger: ThreadManagementServiceShape["waitForTrigger"] = Effect.fn(
+    "ThreadManagementService.waitForTrigger",
+  )(function* (input) {
+    const shell = yield* orchestrator.getThreadShell(input.threadId);
+    if (shell?.activeRunId == null) {
+      return yield* new ThreadManagementBackgroundWaitError({
+        threadId: input.threadId,
+        reason: "unavailable",
+      });
+    }
+    yield* dispatch({
+      type: "thread.metadata.update",
+      threadId: input.threadId,
+      commandId: input.commandId,
+      triggerWait: { runId: shell.activeRunId, reason: input.reason },
+    });
+    return { waitingWhenTurnEnds: true };
+  });
+
   const awaitBackgroundTasks: ThreadManagementServiceShape["awaitBackgroundTasks"] = Effect.fn(
     "ThreadManagementService.awaitBackgroundTasks",
   )(function* (input) {
@@ -1776,7 +1847,12 @@ const make = Effect.gen(function* () {
     stopWorkflow,
     forceStopThread,
     awaitBackgroundTasks,
+    waitForTrigger,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    approvalAttention: orchestrator.approvalAttention,
+    remoteApprovalObservation: orchestrator.remoteApprovalObservation,
+    remoteApprovalTasks: orchestrator.remoteApprovalTasks,
+    registerRemoteApprovalPreflight: orchestrator.registerRemoteApprovalPreflight,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     cancelDelegatedTask: orchestrator.cancelDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,

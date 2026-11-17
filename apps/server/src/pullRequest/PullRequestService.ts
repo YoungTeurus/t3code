@@ -2477,6 +2477,7 @@ export const make = Effect.gen(function* () {
                 host: project.host,
                 number: input.number,
                 verdict: input.verdict,
+                expectedHeadSha: input.expectedHeadSha,
                 body: input.body,
                 comments: input.comments,
               })

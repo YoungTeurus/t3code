@@ -39,16 +39,25 @@ function aggregateRowForState(state: RelayAgentActivityState) {
     threadTitle: state.threadTitle,
     modelTitle: state.modelTitle,
     phase: state.phase,
-    status: statusForPhase(state.phase),
+    status:
+      state.headline === "Thread woke" && state.snoozeWake !== undefined
+        ? "Woke"
+        : statusForPhase(state.phase),
     updatedAt: state.updatedAt,
     deepLink: state.deepLink,
+    ...(state.snoozeWake === undefined ? {} : { snoozeWake: state.snoozeWake }),
   };
 }
 
 function terminalAggregateState(state: RelayAgentActivityState): RelayAgentActivityAggregateState {
   return sanitizeAgentActivityAggregateState({
     title: "T3 Code",
-    subtitle: state.phase === "failed" ? "Agent work failed" : "Agent work completed",
+    subtitle:
+      state.phase === "failed"
+        ? "Agent work failed"
+        : state.headline === "Thread woke" && state.snoozeWake !== undefined
+          ? "Thread woke"
+          : "Agent work completed",
     activeCount: 0,
     updatedAt: state.updatedAt,
     activities: [aggregateRowForState(state)],
@@ -93,7 +102,12 @@ export function makeAggregateState(input: {
     }
     return sanitizeAgentActivityAggregateState({
       title: "T3 Code",
-      subtitle: newest.phase === "failed" ? "Agent work failed" : "Agent work completed",
+      subtitle:
+        newest.phase === "failed"
+          ? "Agent work failed"
+          : newest.headline === "Thread woke" && newest.snoozeWake !== undefined
+            ? "Thread woke"
+            : "Agent work completed",
       activeCount: 0,
       updatedAt: newest.updatedAt,
       activities: recentTerminal.slice(0, MAX_ACTIVITY_ROWS).map(aggregateRowForState),
@@ -102,11 +116,18 @@ export function makeAggregateState(input: {
   const recentTerminalStates = input.activeStates
     .filter((state) => isRecentTerminalState(state, input.nowMs))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const displayedStates = [
-    ...activeStates
-      .toSorted((a, b) => activityPhasePriority(a.phase) - activityPhasePriority(b.phase))
-      .slice(0, MAX_ACTIVITY_ROWS),
+  const candidates = [
+    ...activeStates.toSorted(
+      (a, b) => activityPhasePriority(a.phase) - activityPhasePriority(b.phase),
+    ),
     ...recentTerminalStates,
+  ];
+  const hasFreshWake = (state: RelayAgentActivityState) =>
+    state.snoozeWake !== undefined &&
+    input.nowMs - Date.parse(state.snoozeWake.occurredAt) <= 2 * 60 * 1_000;
+  const displayedStates = [
+    ...candidates.filter(hasFreshWake),
+    ...candidates.filter((state) => !hasFreshWake(state)),
   ].slice(0, MAX_ACTIVITY_ROWS);
   const updatedAt = [...activeStates, ...recentTerminalStates].reduce((latest, state) =>
     state.updatedAt.localeCompare(latest.updatedAt) > 0 ? state : latest,

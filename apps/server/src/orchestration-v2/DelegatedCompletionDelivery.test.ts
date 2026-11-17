@@ -176,7 +176,13 @@ const seedParentWithTerminalTask = (input: {
   readonly runId: RunId;
   readonly rootNodeId: NodeId;
   readonly taskId: NodeId;
-  readonly deliveryState: "pending" | "delivered" | "claimed" | "acknowledged" | "disposed";
+  readonly deliveryState:
+    | "missing"
+    | "pending"
+    | "delivered"
+    | "claimed"
+    | "acknowledged"
+    | "disposed";
   readonly completionWake?: "always" | "settled_only";
   readonly deliveryTaskIds?: ReadonlyArray<NodeId>;
   readonly parentRunStatus?: "running" | "completed";
@@ -314,10 +320,14 @@ const seedParentWithTerminalTask = (input: {
             title: null,
             model: null,
             completionWake: input.completionWake ?? "settled_only",
-            completionDelivery: {
-              state: task.deliveryState,
-              observedByRunId: task.deliveryState === "acknowledged" ? input.runId : null,
-            },
+            ...(task.deliveryState === "missing"
+              ? {}
+              : {
+                  completionDelivery: {
+                    state: task.deliveryState,
+                    observedByRunId: task.deliveryState === "acknowledged" ? input.runId : null,
+                  },
+                }),
             status: "completed" as const,
             result: "child finished",
             startedAt: input.now,
@@ -4202,6 +4212,58 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
 );
 
 it.layer(layerTest)("delegated tasks across a server restart", (it) => {
+  it.effect.each(["pending", "missing", "acknowledged", "disposed"] as const)(
+    "recovers a %s result committed before an interrupted wait returned without duplicates",
+    (deliveryState) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:result-before-restart:${deliveryState}`);
+        const runId = RunId.make(`run:result-before-restart:${deliveryState}`);
+        const taskId = NodeId.make(`task:result-before-restart:${deliveryState}`);
+        yield* seedParentWithTerminalTask({
+          threadId,
+          projectId: ProjectId.make(`project:result-before-restart:${deliveryState}`),
+          runId,
+          rootNodeId: NodeId.make(`node:result-before-restart:${deliveryState}`),
+          taskId,
+          deliveryState,
+          completionWake: "settled_only",
+          now,
+        });
+        const parent = yield* orchestrator.getThreadProjection(threadId);
+        yield* sink.write({
+          events: [
+            {
+              type: "run.updated",
+              id: EventId.make(`event:parent-restarted:${deliveryState}`),
+              threadId,
+              runId,
+              occurredAt: now,
+              payload: { ...parent.runs[0]!, status: "cancelled", completedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        const recovered = yield* orchestrator.getThreadProjection(threadId);
+        const shouldDeliver = deliveryState === "pending" || deliveryState === "missing";
+        assert.equal(
+          recovered.subagents.find((task) => task.id === taskId)?.completionDelivery?.state,
+          shouldDeliver ? "claimed" : deliveryState,
+        );
+        assert.deepEqual(
+          recovered.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery?.taskIds,
+          shouldDeliver ? [taskId] : undefined,
+        );
+        yield* orchestrator.recoverDelegatedTasks;
+        const again = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          again.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery,
+          recovered.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery,
+        );
+      }),
+  );
   it.effect.each([
     { name: "releases", key: "", pendingBackgroundTasks: [], released: true },
     {
@@ -4233,6 +4295,7 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         const child = yield* seedRestartCancelledChild({
           parentThreadId: threadId,
           projectId,
+
           parentRunId: runId,
           rootNodeId,
           name: `result-message${key}-child`,

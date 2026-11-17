@@ -105,6 +105,7 @@ function startWithMissingWorktree(
     [managedWorktreesDir]: managedWorktreesDir,
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
+  existingArcWorkspace = false,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -156,6 +157,18 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
+  const recoverWorktree = vi.fn(() =>
+    existingArcWorkspace
+      ? Effect.fail(
+          new GitCommandError({
+            cwd: "/tmp/provider-turn-start-project",
+            operation: "recoverWorktree",
+            command: "arc-wt",
+            detail: "Workspace lease is held by another owner.",
+          }),
+        )
+      : Effect.succeed(false),
+  );
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -164,7 +177,7 @@ function startWithMissingWorktree(
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
         Layer.succeed(FileSystem.FileSystem, {
-          exists: () => Effect.succeed(false),
+          exists: () => Effect.succeed(existingArcWorkspace),
           realPath: (target: string) =>
             normalize(target) in realPaths
               ? Effect.succeed(realPaths[normalize(target)])
@@ -179,6 +192,7 @@ function startWithMissingWorktree(
         } as never),
         layerWorktreeLocation(),
         Layer.mock(GitWorkflow.GitWorkflowService)({
+          recoverWorktree,
           pruneWorktrees,
           createWorktree,
           listLocalBranchNames,
@@ -226,6 +240,7 @@ function startWithMissingWorktree(
   const start = Effect.gen(function* () {
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId, willRetry: true })
+
       .pipe(Effect.flip);
   }).pipe(Effect.provide(layer), Effect.runPromise);
   return {
@@ -234,9 +249,19 @@ function startWithMissingWorktree(
     createWorktree,
     writeIfRunCurrent,
     startRootRun,
+    recoverWorktree,
     projectionReads: () => projectionReadCount,
   };
 }
+
+it("checks an existing Arc workspace lease before starting a provider", async () => {
+  const harness = startWithMissingWorktree("/tmp/arc-existing/service", {}, true);
+  await harness.start;
+  expect(harness.recoverWorktree).toHaveBeenCalledOnce();
+  expect(harness.startRootRun).not.toHaveBeenCalled();
+  expect(harness.pruneWorktrees).not.toHaveBeenCalled();
+  expect(harness.createWorktree).not.toHaveBeenCalled();
+});
 
 it.each([
   {
@@ -1262,6 +1287,7 @@ function makeLocalCommandHarness(input: {
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
+              recoverWorktree: () => Effect.succeed(false),
               pruneWorktrees: () => Effect.void,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
               createWorktree,

@@ -3,7 +3,7 @@ import {
   type ThreadSnoozeShell,
 } from "@t3tools/client-runtime/state/thread-settled";
 
-export type ThreadNotificationKind = "input" | "completion";
+export type ThreadNotificationKind = "input" | "completion" | "wake";
 
 export interface ThreadNotificationObservation {
   /** Status and request key, or status and run without a request, while the thread needs attention. */
@@ -14,6 +14,7 @@ export interface ThreadNotificationObservation {
   readonly settled: boolean;
   /** When the latest run completed, if it did. */
   readonly completedAt: number | null;
+  readonly dependencyWakeId?: string | null;
   /** The latest run answers a background-work progress wake, like a Monitor line. */
   readonly backgroundWake: boolean;
 }
@@ -98,6 +99,11 @@ export function createThreadNotificationGate<Key>(
       if (!prior || silenced) skip(key, next.completedAt);
       const fresh = attend(key, prior, next);
       if (!prior || options.archived) return;
+      if (next.dependencyWakeId && next.dependencyWakeId !== prior.dependencyWakeId) {
+        skip(key, next.completedAt);
+        notify(key, "wake");
+        return;
+      }
       if (fresh) {
         notify(key, "input");
         return;

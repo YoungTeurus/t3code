@@ -8,6 +8,9 @@ import {
 } from "@t3tools/shared/databaseMigrationLog";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 
+import ForkMigration0001 from "./ForkMigrations/F001_ThreadSnoozeDependencies.ts";
+import ForkMigration0002 from "./ForkMigrations/F002_RemoteApprovalAttention.ts";
+
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
 import Migration0003 from "./Migrations/003_CheckpointDiffBlobs.ts";
@@ -261,6 +264,24 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
   });
 });
 
+const forkMigrationLoader = Migrator.fromRecord({
+  "1_ThreadSnoozeDependencies": ForkMigration0001,
+  "2_RemoteApprovalAttention": ForkMigration0002,
+});
+
+const reconcileForkMigrations = Effect.fn("reconcileForkMigrations")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const tables =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
+  if (tables.length === 0) return;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id IN (74, 81) AND name = 'ThreadSnoozeDependencies'`;
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id IN (75, 82) AND name = 'RemoteApprovalAttention'`;
+    }),
+  );
+});
+
 const latestMigrationId = Math.max(...migrationEntries.map(([id]) => id));
 
 // Mirrors the Migrator, which runs only ids above the highest recorded, plus the V2-preview reconciliation.
@@ -276,8 +297,19 @@ export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* 
       SUM(name = 'OrchestrationV2' AND migration_id IN (53, 54)) AS previewRows
     FROM effect_sql_migrations
   `;
+  const forkTables =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fork_sql_migrations'`;
+  if (forkTables.length === 0) return true;
+  const forkRows = yield* sql<{
+    readonly count: number;
+  }>`SELECT COUNT(*) AS count FROM fork_sql_migrations WHERE (migration_id = 1 AND name = 'ThreadSnoozeDependencies') OR (migration_id = 2 AND name = 'RemoteApprovalAttention')`;
+  if (forkRows[0]?.count !== 2) return true;
+  const legacyRows =
+    yield* sql`SELECT migration_id FROM effect_sql_migrations WHERE (migration_id IN (74, 81) AND name = 'ThreadSnoozeDependencies') OR (migration_id IN (75, 82) AND name = 'RemoteApprovalAttention')`;
   const row = rows[0];
-  return (row?.latestId ?? 0) < latestMigrationId || (row?.previewRows ?? 0) > 0;
+  return (
+    legacyRows.length > 0 || (row?.latestId ?? 0) < latestMigrationId || (row?.previewRows ?? 0) > 0
+  );
 });
 
 const run = Migrator.make({});
@@ -297,6 +329,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
   const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
   if (includesV2) {
+    yield* reconcileForkMigrations();
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
   const sql = yield* SqlClient.SqlClient;
@@ -328,7 +361,14 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     }
     executedMigrations.push(...(yield* run({ loader: makeMigrationLoader(id) })));
   }
-  const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
+  const forkMigrations =
+    toMigrationInclusive === undefined
+      ? yield* run({ loader: forkMigrationLoader, table: "fork_sql_migrations" })
+      : [];
+  const migrations = [
+    ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forkMigrations.map(([id, name]) => `F${String(id).padStart(3, "0")}_${name}`),
+  ];
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));

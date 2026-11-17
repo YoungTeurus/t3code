@@ -297,6 +297,17 @@ To choose what the thread details card shows, right-click the card or open
 shortcuts, such as Open in editor and project scripts. **Reset to default** brings
 back the standard rows.
 
+## Waiting for an event
+
+An agent can leave unfinished work in **Working** with a **Waiting** status while it waits for
+an external event. An enabled schedule or webhook must be attached to that chat. The chat
+shows the reason and how long it has been waiting. Waiting survives app restarts without
+keeping the model running. Questions and approvals use the usual attention state.
+
+A message or a scheduled or webhook trigger resumes normal processing. Opening the chat does
+not. After checking an unchanged condition, the agent can wait again. **Stop** clears the wait
+without disabling schedules or webhooks.
+
 ## Side chats
 
 A side chat lets you ask a question about a thread without adding to it. It starts
@@ -339,3 +350,14 @@ A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early for an approval,
 a new question, a failed run, or a message or answer you send. You can snooze an existing
 question and answer when the thread wakes; the question stays unanswered.
+
+Choose **Snooze → Until another thread…** to wait for one thread in the same
+environment, including a thread in another project. Choose either its next
+successful run or when it is settled. Failed or stopped runs keep the wait in
+place. If the other thread is archived or deleted, the waiting thread wakes and
+shows the reason. Waking a thread this way does not start its agent.
+
+When the waiting thread needs your attention, it becomes visible while keeping
+the wait. After responding, you can snooze it again with the same condition.
+**Wake thread** cancels the wait. Settled threads are excluded from the picker
+by default; include them to wait for a future successful run.

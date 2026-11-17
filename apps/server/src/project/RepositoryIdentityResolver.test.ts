@@ -5,11 +5,18 @@ import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { SourceControlProviderKind } from "@t3tools/contracts";
 import { vi } from "vite-plus/test";
 
 import * as ProcessRunner from "../processRunner.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as Layer from "effect/Layer";
+
+const gitResolverLayer = Layer.effect(
+  RepositoryIdentityResolver.RepositoryIdentityResolver,
+  RepositoryIdentityResolver.make(),
+).pipe(Layer.provide(ProcessRunner.layer));
 
 const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
 const normalizeResolvedPath = (value: string) => normalizePathSeparators(value);
@@ -24,6 +31,29 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
   }).pipe(Effect.provide(ProcessRunner.layer));
 
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
+  it.effect("resolves native Arc identities without inventing a repository owner", () =>
+    Effect.gen(function* () {
+      const resolver = yield* RepositoryIdentityResolver.make({
+        resolveNative: () =>
+          Effect.succeed({
+            canonicalKey: "a.yandex-team.ru/arcadia",
+            locator: {
+              source: "arc",
+              remoteName: "arcadia",
+              remoteUrl: "https://a.yandex-team.ru/arcadia",
+            },
+            rootPath: "/arcadia",
+            name: "arcadia",
+            provider: SourceControlProviderKind.make("arcanum"),
+          }),
+      });
+      const identity = yield* resolver.resolve("/arcadia/service");
+      expect(identity?.canonicalKey).toBe("a.yandex-team.ru/arcadia");
+      expect(identity?.locator.source).toBe("arc");
+      expect(identity?.owner).toBeUndefined();
+      expect(identity?.rootPath).toBe("/arcadia");
+    }).pipe(Effect.provide(ProcessRunner.layer)),
+  );
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -50,7 +80,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.owner).toBe("T3Tools");
       expect(identity?.name).toBe("t3code");
       expect(yield* resolver.resolve(path.join(cwd, ".git"))).toBeNull();
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("identifies the host of an SSH remote that leaves its user to ssh config", () =>
@@ -69,7 +99,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
       expect(identity?.provider).toBe("github");
       expect(identity?.displayName).toBe("T3Tools/t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("keeps a literal .git in an Azure DevOps repository name", () =>
@@ -117,7 +147,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
       expect(identity?.locator.remoteUrl).toBe("git@github.com:T3Tools/t3code.git");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("resolves a remote whose URL contains a space", () =>
@@ -134,7 +164,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       const identity = yield* resolver.resolve(cwd);
       expect(identity?.locator.remoteUrl).toBe("ssh://git@git.example.test/team repos/app.git");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect.each(["repo", "repo "] as const)(
@@ -164,7 +194,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
           normalizeResolvedPath(resolvedRepoRoot),
         );
-      }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+      }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect.each(["bare clone", "dot-bare"] as const)(
@@ -218,7 +248,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         for (const projectRoot of projectRoots) {
           expect(yield* resolver.resolve(projectRoot, { refresh: true })).toBeNull();
         }
-      }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+      }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect(
@@ -257,7 +287,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(bareProbes()).toEqual([]);
 
         expect(yield* resolver.resolve(gitDir)).toBeNull();
-      }).pipe(Effect.provide(ProcessRunner.layer)),
+      }).pipe(Effect.provide(Layer.mergeAll(ProcessRunner.layer, gitResolverLayer))),
   );
 
   it.effect("ignores local-path remotes such as GitButler's gb-local", () =>
@@ -284,7 +314,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       const mixedIdentity = yield* resolver.resolve(mixedDir);
       expect(mixedIdentity?.locator.remoteName).toBe("mirror");
       expect(mixedIdentity?.canonicalKey).toBe("github.com/t3tools/t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect.each(["add", "replace"] as const)(
@@ -322,7 +352,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
         expect(identity?.displayName).toBe("T3Tools/t3code");
         expect(yield* resolver.resolve(cwd)).toEqual(identity);
-      }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+      }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("reports a fork's own remote as origin next to the upstream identity", () =>
@@ -346,7 +376,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         remoteUrl: "git@github.com:julius/t3code-fork.git",
         displayName: "julius/t3code-fork",
       });
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("uses the fork as the identity when gh repo set-default points at it", () =>
@@ -366,7 +396,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       expect(identity?.canonicalKey).toBe("github.com/julius/t3code-fork");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("follows an OWNER/REPO mark only to a remote that fetches that repository", () =>
@@ -406,7 +436,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       yield* git(cwd, ["remote", "add", "ghe-parent", "https://ghe.example.com:8443/acme/web.git"]);
       yield* git(cwd, ["config", "remote.ghe-fork.gh-resolved", "acme/web"]);
       expect((yield* resolveFresh())?.locator.remoteName).toBe("ghe-parent");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("reads the project's gh default when the server inherited GIT_DIR", () =>
@@ -435,7 +465,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       expect(identity?.canonicalKey).toBe("github.com/julius/t3code-fork");
       expect(identity?.locator.remoteName).toBe("origin");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
@@ -456,6 +486,6 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.displayName).toBe("T3Tools/platform/t3code");
       expect(identity?.owner).toBe("T3Tools");
       expect(identity?.name).toBe("t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 });

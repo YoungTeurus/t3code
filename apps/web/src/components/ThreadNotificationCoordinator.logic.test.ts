@@ -56,6 +56,15 @@ describe("createThreadNotificationGate", () => {
     expect(notify.mock.calls).toEqual([["thread", "input"]]);
   });
 
+  it("notifies once for a new dependency wake but not for the first snapshot", () => {
+    const { notify, observe } = harness();
+    observe({ ...working, dependencyWakeId: "old" });
+    expect(notify).not.toHaveBeenCalled();
+    observe({ ...working, dependencyWakeId: "new" });
+    observe({ ...working, dependencyWakeId: "new" });
+    expect(notify.mock.calls).toEqual([["thread", "wake"]]);
+  });
+
   it("notifies a completion immediately and only once", () => {
     const { notify, observe } = harness();
     observe(working);
