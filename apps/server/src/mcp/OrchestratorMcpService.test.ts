@@ -3604,8 +3604,24 @@ describe("OrchestratorMcpService provider resolution", () => {
         ),
       );
 
+    const prWatch = {
+      startedAt: "2026-10-05T00:00:00.000Z",
+      headSha: null,
+      failedChecks: [],
+      passed: false,
+      passedChecks: [],
+      conflicting: false,
+      remarksThrough: "2026-10-05T00:00:00.000Z",
+      remarkIds: [],
+      wakes: 0,
+    };
+
     it.effect.each([
-      ["no automation", [], false],
+      ["no automation", [], false, false],
+      ["active PR watch", [], true, true],
+      ["linked PR without watch", [], false, false],
+      ["ended PR subscription", [], false, false],
+      ["dismissed PR watch", [], false, true],
       ["paused automation", [task({ threadId: boundThreadId, enabled: false })], false],
       ["another thread", [task({ threadId: ThreadId.make("thread:other") })], false],
       ["unbound automation", [task({ threadId: null })], false],
@@ -3616,8 +3632,8 @@ describe("OrchestratorMcpService provider resolution", () => {
       ],
       ["bound webhook", [task({ threadId: boundThreadId })], true],
     ] as const)(
-      "requires enabled automation on the waiting thread: %s",
-      ([_name, tasks, allowed]) =>
+      "requires an active trigger source on this thread: %s",
+      ([_name, tasks, allowed, watching]) =>
         Effect.gen(function* () {
           const upserted = yield* Ref.make(0);
           const scope: McpInvocationScope = {
@@ -3638,7 +3654,38 @@ describe("OrchestratorMcpService provider resolution", () => {
               assert.equal(error.code, "invalid_request");
               assert.include(error.message, "enabled automation bound to this thread");
             }
-          }).pipe(Effect.provide(service(tasks, liveThreadShell(boundThreadId), upserted)));
+          }).pipe(
+            Effect.provide(
+              service(
+                tasks,
+                {
+                  ...liveThreadShell(boundThreadId),
+                  pullRequests:
+                    _name === "no automation"
+                      ? []
+                      : [
+                          {
+                            host: "github.com",
+                            repository: "example/repo",
+                            number: 1,
+                            url: "https://github.com/example/repo/pull/1",
+                            source: _name === "dismissed PR watch" ? "stack-dismissed" : "agent",
+                            linkedAt: "2026-10-05T00:00:00.000Z",
+                            snapshot: null,
+                            stack: null,
+                            ...(_name === "ended PR subscription" ? { endedWatch: prWatch } : {}),
+                            ...(watching
+                              ? {
+                                  watch: prWatch,
+                                }
+                              : {}),
+                          },
+                        ],
+                },
+                upserted,
+              ),
+            ),
+          );
         }),
     );
 

@@ -353,7 +353,7 @@ const layerTest = Layer.mergeAll(
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
   Layer.provide(layerServerConfig),
   Layer.provide(ServerSettings.layerTest()),
@@ -4473,6 +4473,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         );
         yield* sweep;
         assert.deepEqual(yield* summaries, []);
+        yield* waitForPrEvent(threadId);
         disconnected = true;
         for (let pass = 0; pass < 15; pass += 1) {
           genericFailure = reason === "failed" && (pass === 0 || (pass >= 2 && pass <= 8));
@@ -4482,6 +4483,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
 
         const thread = yield* orchestrator.getThreadShell(threadId);
         if (reason !== "failed") {
+          assert.isNull(thread?.triggerWait);
           assert.isUndefined(thread?.pullRequests?.[0]?.watch);
           assert.deepEqual(yield* summaries, ["#8: stopped watching, could not read it"]);
           return;
@@ -4672,11 +4674,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       yield* worker.drain();
       assert.deepEqual(yield* summaries, []);
 
+      yield* waitForPrEvent(threadId);
       headSha = "bbbbbbbbbb";
       yield* TestClock.adjust("10 minutes");
       yield* restarted.sweep;
       yield* worker.drain();
       assert.deepEqual(yield* summaries, ["#12: checks passed"]);
+      assert.isNull((yield* orchestrator.getThreadShell(threadId))?.triggerWait);
 
       yield* watch(false, "stop");
       yield* watch(true, "again");
@@ -4934,6 +4938,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.deepEqual(yield* summaries, []);
         assert.isFalse(yield* checksPending);
 
+        yield* waitForPrEvent(threadId);
         // A push clears the answer while a read with news is in flight. That read's answer is the
         // old head's, so the answer stays cleared while its news still wakes the agent.
         const started = yield* Deferred.make<void>();
@@ -4961,6 +4966,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(inFlight);
         assert.lengthOf(yield* summaries, 1);
+        assert.isNull((yield* orchestrator.getThreadShell(threadId))?.triggerWait);
         assert.isUndefined(yield* checksPending);
 
         // The next sweep reads it again though nothing on the host changed.
@@ -6318,6 +6324,365 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }
     return { threadId, key, watch, snapshotSyncedAt };
   });
+
+  const waitForPrEvent = Effect.fn("test.waitForPrEvent")(function* (threadId: ThreadId) {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`${threadId}-start`),
+      threadId,
+      messageId: MessageId.make(`${threadId}-start`),
+      text: "Watch this PR",
+      createdBy: "user",
+      creationSource: "web",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+    });
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    yield* outbox.cancelUnsettled({
+      threadId,
+      effectTypes: ["provider-turn.start"],
+      reason: "provider completion supplied by fixture",
+    });
+    const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make(`${threadId}-running`),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...run, status: "running", startedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make(`${threadId}-wait`),
+      threadId,
+      triggerWait: { runId: run.id, reason: "PR event" },
+    });
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make(`${threadId}-completed`),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...run, status: "completed", completedAt: now },
+        },
+      ],
+    });
+    return { run, now };
+  });
+
+  it.effect.each(["host merge", "synced merge", "host close", "synced close"] as const)(
+    "wakes trigger waiting once on terminal PR: %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const { threadId, key } = yield* createWatchedThread(`trigger-${mode}`);
+        assert.isNull((yield* orchestrator.getThreadShell(threadId))?.triggerWait ?? null);
+        const { now } = yield* waitForPrEvent(threadId);
+        const waiting = yield* orchestrator.getThreadShell(threadId);
+        assert.equal(waiting?.triggerWait?.reason, "PR event");
+        assert.isTrue(
+          waiting?.pendingBackgroundTasks?.some((task) => task.description === "PR event"),
+        );
+        const state = mode.endsWith("merge") ? "merged" : "closed";
+        const detail: PullRequestDetail = {
+          ...watchedPullRequestDetail({
+            projectId: ProjectId.make(`${threadId}-project`),
+            number: 7,
+            at: DateTime.formatIso(now),
+          }),
+          state,
+        };
+        if (mode.startsWith("synced"))
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request-link.sync",
+            commandId: CommandId.make(`${threadId}-snapshot`),
+            threadId,
+            ...key,
+            snapshot: {
+              state,
+              title: "Watched PR",
+              headBranch: "feature",
+              baseBranch: "main",
+              isDraft: false,
+              updatedAt: null,
+              syncedAt: DateTime.formatIso(now),
+            },
+            stack: null,
+          });
+        const reactor = yield* PullRequestWatchReactor.make.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              Layer.mock(PullRequestService.PullRequestService)({
+                watchFingerprint: () => Effect.succeed(null),
+                detail: () => Effect.succeed(detail),
+                activity: () =>
+                  Effect.succeed({
+                    comments: [],
+                    commentCount: 0,
+                    commentsTruncated: false,
+                    reviewThreads: [],
+                    commits: [],
+                  }),
+              }),
+            ),
+          ),
+        );
+        yield* reactor.sweep;
+        yield* reactor.sweep;
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(after.thread.triggerWait);
+        assert.isUndefined(after.thread.pullRequests?.[0]?.watch);
+        assert.lengthOf(
+          after.messages.filter((message) => message.notification?.source.kind === "monitor"),
+          1,
+        );
+        assert.lengthOf(after.runs, 2);
+      }),
+  );
+
+  it.effect.each(["none", "watch", "timer", "webhook", "disabled", "unbound", "foreign"] as const)(
+    "manual unwatch clears waiting only without another source: %s",
+    (source) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const { threadId, key, watch } = yield* createWatchedThread(`unwatch-wait-${source}`);
+        const another = source === "watch" || source === "timer" || source === "webhook";
+        if (source === "watch")
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.watch",
+            commandId: CommandId.make(`${threadId}-second`),
+            threadId,
+            ...key,
+            number: 8,
+            watching: true,
+            link: { url: "https://github.com/pingdotgg/t3code/pull/8", source: "agent" },
+          });
+        if (source !== "none" && source !== "watch") {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO scheduled_tasks ${sql.insert({
+            task_id: `${threadId}-task`,
+            title: "PR follow-up",
+            prompt: "Check PR",
+            enabled: source === "disabled" ? 0 : 1,
+            schedule_json: JSON.stringify(
+              source === "webhook"
+                ? { type: "webhook", signature: null }
+                : { type: "interval", everyMs: 60_000 },
+            ),
+            project_id: `${threadId}-project`,
+            thread_id: source === "unbound" ? null : source === "foreign" ? "other" : threadId,
+            workspace_strategy_json: JSON.stringify({ type: "root" }),
+            model_selection_json: JSON.stringify(modelSelection),
+            runtime_mode: "full-access",
+            interaction_mode: "default",
+            created_by: "user",
+            creation_source: "web",
+            created_at: "1970-01-01T00:00:00.000Z",
+            updated_at: "1970-01-01T00:00:00.000Z",
+            last_run_status: "never",
+            run_count: 0,
+          })}`;
+        }
+        yield* waitForPrEvent(threadId);
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`${threadId}-unwatch`),
+          threadId,
+          ...key,
+          watching: false,
+        });
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(after.thread.triggerWait != null, another);
+        assert.isUndefined(after.thread.pullRequests?.[0]?.watch);
+        assert.lengthOf(after.runs, 1);
+        assert.lengthOf(after.messages, 1);
+        const stale = yield* orchestrator
+          .dispatch({
+            type: "thread.pull-request-watch.sync",
+            commandId: CommandId.make(`${threadId}-stale`),
+            threadId,
+            ...key,
+            startedAt: watch.startedAt,
+            watch: null,
+            wake: {
+              messageId: MessageId.make(`${threadId}-stale`),
+              text: "Merged",
+              notification: { source: { kind: "monitor" }, outcome: "updated", summary: "Merged" },
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(stale._tag, "Failure");
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).messages,
+          after.messages,
+        );
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "serializes waiting registration with unwatch: wait first %s",
+    (waitFirst) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const { threadId, key } = yield* createWatchedThread(`wait-race-${waitFirst}`);
+        const { run, now } = yield* waitForPrEvent(threadId);
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make(`${threadId}-running-again`),
+              type: "run.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...run, status: "running", startedAt: now },
+            },
+          ],
+        });
+        const wait = orchestrator
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${threadId}-race-wait`),
+            threadId,
+            triggerWait: { runId: run.id, reason: "PR event" },
+          })
+          .pipe(Effect.result);
+        const unwatch = orchestrator
+          .dispatch({
+            type: "thread.pull-request.watch",
+            commandId: CommandId.make(`${threadId}-race-unwatch`),
+            threadId,
+            ...key,
+            watching: false,
+          })
+          .pipe(Effect.result);
+        const [first, second] = yield* executor.withLock(
+          threadId,
+          Effect.gen(function* () {
+            const first = yield* Effect.forkChild(waitFirst ? wait : unwatch, {
+              startImmediately: true,
+            });
+            const second = yield* Effect.forkChild(waitFirst ? unwatch : wait, {
+              startImmediately: true,
+            });
+            return [first, second] as const;
+          }),
+        );
+        const results = [yield* Fiber.join(first), yield* Fiber.join(second)];
+        assert.equal(results[waitFirst ? 0 : 1]?._tag, waitFirst ? "Success" : "Failure");
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(after.thread.triggerWait);
+        assert.isUndefined(after.thread.pullRequests?.[0]?.watch);
+        assert.lengthOf(after.runs, 1);
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "discards a PR read completed after unwatch or restart: restart %s",
+    (restart) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const { threadId, key } = yield* createWatchedThread(`read-race-${restart}`);
+        yield* waitForPrEvent(threadId);
+        const reading = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const reactor = yield* PullRequestWatchReactor.make.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              Layer.mock(PullRequestService.PullRequestService)({
+                watchFingerprint: () => Effect.succeed(null),
+                detail: () =>
+                  Deferred.succeed(reading, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.as({
+                      ...watchedPullRequestDetail({
+                        projectId: ProjectId.make(`${threadId}-project`),
+                        number: 7,
+                        at: "1970-01-01T00:00:00.000Z",
+                      }),
+                      state: "merged" as const,
+                    }),
+                  ),
+                activity: () =>
+                  Effect.succeed({
+                    comments: [],
+                    commentCount: 0,
+                    commentsTruncated: false,
+                    reviewThreads: [],
+                    commits: [],
+                  }),
+              }),
+            ),
+          ),
+        );
+        const sweep = yield* Effect.forkChild(reactor.sweep);
+        yield* Deferred.await(reading);
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`${threadId}-unwatch`),
+          threadId,
+          ...key,
+          watching: false,
+        });
+        if (restart) {
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.watch",
+            commandId: CommandId.make(`${threadId}-rewatch`),
+            threadId,
+            ...key,
+            watching: true,
+          });
+        }
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(sweep);
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(after.thread.triggerWait);
+        assert.equal(after.thread.pullRequests?.[0]?.watch !== undefined, restart);
+        assert.lengthOf(after.runs, 1);
+        assert.lengthOf(after.messages, 1);
+      }),
+  );
+
+  it.effect("keeps waiting when automation sources cannot be read", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sql = yield* SqlClient.SqlClient;
+      const { threadId, key } = yield* createWatchedThread("automation-unavailable");
+      yield* waitForPrEvent(threadId);
+      yield* sql`ALTER TABLE scheduled_tasks RENAME TO unavailable_tasks`;
+      const result = yield* orchestrator
+        .dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`${threadId}-unwatch`),
+          threadId,
+          ...key,
+          watching: false,
+        })
+        .pipe(
+          Effect.result,
+          Effect.ensuring(
+            sql`ALTER TABLE unavailable_tasks RENAME TO scheduled_tasks`.pipe(Effect.orDie),
+          ),
+        );
+      assert.equal(result._tag, "Failure");
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.thread.triggerWait?.reason, "PR event");
+      assert.isDefined(after.thread.pullRequests?.[0]?.watch);
+      assert.lengthOf(after.runs, 1);
+    }),
+  );
 
   it.effect.each([
     "unwatch",

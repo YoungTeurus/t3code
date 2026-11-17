@@ -303,6 +303,9 @@ export interface EventSinkV2Shape {
     } | null,
     EventSinkV2Error
   >;
+  readonly hasEnabledBoundAutomation: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly remoteApprovalTasks: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<RemoteApprovalCheck>, EventSinkV2Error>;
@@ -1975,6 +1978,16 @@ const layerBase: Layer.Layer<
                   pendingApprovalCount: row.pending_approval_count,
                 };
           }).pipe(Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause }))),
+      ),
+      hasEnabledBoundAutomation: Effect.fn("EventSink.hasEnabledBoundAutomation")(
+        function* (threadId) {
+          const rows = yield* sql<{ readonly present: number }>`
+          SELECT EXISTS (
+            SELECT 1 FROM scheduled_tasks WHERE thread_id = ${threadId} AND enabled = 1
+          ) AS present
+        `.pipe(Effect.mapError((cause) => new EventSinkStreamError({ threadId, cause })));
+          return rows[0]?.present === 1;
+        },
       ),
       remoteApprovalTasks: (threadId) =>
         remoteApprovalTasks(threadId).pipe(

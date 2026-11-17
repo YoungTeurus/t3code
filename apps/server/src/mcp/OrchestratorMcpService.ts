@@ -119,6 +119,7 @@ import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingEr
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   clientModeCeiling,
@@ -2238,10 +2239,21 @@ const make = Effect.gen(function* () {
             failure("orchestration_error", `Could not check automations: ${error.message}`),
           ),
         );
-      if (!tasks.some((task) => task.enabled && task.threadId === caller.thread.threadId)) {
+      const shell = yield* threadManagement
+        .getThreadShell(caller.thread.threadId)
+        .pipe(Effect.mapError(threadManagementFailure));
+      if (
+        !tasks.some((task) => task.enabled && task.threadId === caller.thread.threadId) &&
+        !(
+          shell &&
+          threadPullRequestsOf(shell).some(
+            (link) => link.source !== "stack-dismissed" && link.watch !== undefined,
+          )
+        )
+      ) {
         return yield* failure(
           "invalid_request",
-          "Waiting requires an enabled automation bound to this thread. Create or enable a scheduled task or webhook first. For human input, ask a question instead.",
+          "Waiting requires an active native PR watch or an enabled automation bound to this thread. Watch a pull request, or create or enable a scheduled task or webhook first. For human input, ask a question instead.",
         );
       }
       return yield* threadManagement

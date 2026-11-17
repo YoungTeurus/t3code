@@ -3470,6 +3470,26 @@ it.effect(
         occurredAt: now,
         payload: run,
       });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO scheduled_tasks ${sql.insert({
+        task_id: "trigger:task",
+        title: "Approval",
+        prompt: "Check approval",
+        enabled: 1,
+        schedule_json: JSON.stringify({ type: "interval", everyMs: 60_000 }),
+        project_id: "project:trigger",
+        thread_id: threadId,
+        workspace_strategy_json: JSON.stringify({ type: "root" }),
+        model_selection_json: JSON.stringify(modelSelection),
+        runtime_mode: "full-access",
+        interaction_mode: "default",
+        created_by: "user",
+        creation_source: "web",
+        created_at: DateTime.formatIso(now),
+        updated_at: DateTime.formatIso(now),
+        last_run_status: "never",
+        run_count: 0,
+      })}`;
       const arm = (id: string) =>
         orchestrator.dispatch({
           type: "thread.metadata.update",
