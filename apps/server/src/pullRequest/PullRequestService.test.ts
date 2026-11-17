@@ -6,6 +6,8 @@ import { assert, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -32,6 +34,10 @@ import type { SourceControlProvider } from "@t3tools/source-control-core/server/
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { fakePullRequestProvider } from "@t3tools/source-control-testing/fakeSourceControlDriver";
+import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
+import * as ArcanumDriver from "@t3tools/source-control-arcanum/server/driver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   PullRequestProviderError,
   type ProviderChangeRequest,
@@ -173,6 +179,133 @@ it.effect("refuses maintainer edits on a host without the capability", () =>
       .pipe(Effect.flip);
     assert.strictEqual(result._tag, "PullRequestOperationError");
     assert.strictEqual(writes, 0);
+  }),
+);
+
+it.effect("carries a host's review status and check actions, and runs them", () =>
+  Effect.gen(function* () {
+    const reviewStatus = {
+      reviewers: [],
+      completionPercent: 50,
+      actions: [{ id: "sticky-ship", label: "Sticky Ship", available: true }],
+    };
+    const checkActions = [{ id: "skip-service:ci", label: "Skip ci", available: true }];
+    const ran: Array<unknown> = [];
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: () =>
+            Effect.succeed({ ...hostedChangeRequest("Body"), reviewStatus, checkActions }),
+          runReviewAction: (input) => Effect.sync(() => void ran.push(input)),
+          runCheckAction: (input) => Effect.sync(() => void ran.push(input)),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const detail = yield* service.detail(ref);
+    assert.deepStrictEqual(detail.reviewStatus, reviewStatus);
+    assert.deepStrictEqual(detail.checkActions, checkActions);
+    yield* service.runReviewAction({ ...ref, actionId: "sticky-ship", expectedHeadSha: "abc" });
+    yield* service.runCheckAction({
+      ...ref,
+      actionId: "unrequire:ci:build",
+      reason: "flaky",
+      expectedHeadSha: "abc",
+    });
+    const target = { cwd: "/w", repository: "acme/web", host: "github.com", number: 1 };
+    assert.deepStrictEqual(ran, [
+      { ...target, actionId: "sticky-ship", expectedHeadSha: "abc" },
+      { ...target, actionId: "unrequire:ci:build", reason: "flaky", expectedHeadSha: "abc" },
+    ]);
+  }),
+);
+
+it.effect("refuses a review action on a host that reports none", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [fakePullRequestProvider(SourceControlProviderKind.make("github"))],
+    });
+    const error = yield* Effect.flip(
+      service.runReviewAction({
+        projectId: "p1" as ProjectId,
+        repository: "acme/web",
+        number: 1,
+        actionId: "sticky-ship",
+      }),
+    );
+    assert.strictEqual(error._tag, "PullRequestOperationError");
+  }),
+);
+
+it.effect("passes issue flags only to a host with issues, and refuses them elsewhere", () =>
+  Effect.gen(function* () {
+    const sent: Array<unknown> = [];
+    const record = (input: unknown) => Effect.sync(() => void sent.push(input));
+    const provider = (issues: boolean) =>
+      fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+        capabilities: {
+          diff: true,
+          comment: true,
+          actions: [],
+          mergeMethods: ["merge"],
+          search: true,
+          review: { ...FULL_REVIEW, issues },
+          reviewers: FULL_REVIEWERS,
+        },
+        comment: record,
+        submitReview: record,
+        setThreadResolution: record,
+      });
+    const draft = {
+      path: "a.ts",
+      position: { kind: "added" as const, newLine: 1 },
+      body: "Why?",
+      isIssue: true,
+    };
+    for (const issues of [false, true]) {
+      sent.length = 0;
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [provider(issues)],
+      });
+      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const writes = [
+        service.comment({ ...ref, body: "Why?", isIssue: true }),
+        service.submitReview({ ...ref, verdict: "comment", body: "", comments: [draft] }),
+        service.setThreadResolution({
+          ...ref,
+          threadId: "7",
+          resolved: true,
+          issueState: "dropped",
+        }),
+      ];
+      for (const write of writes) {
+        const exit = yield* Effect.exit(write);
+        assert.strictEqual(Exit.isSuccess(exit), issues);
+      }
+      if (issues) {
+        assert.deepInclude(sent[0], { isIssue: true });
+        assert.deepInclude((sent[1] as { comments: Array<unknown> }).comments[0], {
+          isIssue: true,
+        });
+        assert.deepInclude(sent[2], { resolved: true, issueState: "dropped" });
+        const mismatched = yield* Effect.flip(
+          service.setThreadResolution({
+            ...ref,
+            threadId: "7",
+            resolved: false,
+            issueState: "dropped",
+          }),
+        );
+        assert.strictEqual(mismatched._tag, "PullRequestOperationError");
+      } else {
+        assert.deepStrictEqual(sent, []);
+      }
+    }
   }),
 );
 
@@ -656,6 +789,573 @@ it.effect("uses a provider's raw cursor advance when it consumed malformed rows"
       "dev.azure.com dev.azure.com/acme/web": "2026-07-02T00:00:00Z|4|7",
     });
   }),
+);
+
+/** The active iteration's checks as Arcanum projects them into a pull request read. */
+const arcanumChecks = (status: string) => [{ system: "CI", type: "build", required: true, status }];
+
+/** A row of Arcanum's pull request listing, newest first by `second`. */
+function arcanumRow(id: number, second: number, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    url: `https://a.yandex-team.ru/review/${id}`,
+    summary: `PR ${id}`,
+    author: { name: "alice" },
+    vcs: { arc_repo_name: "arcadia", from_branch: `users/alice/b${id}`, to_branch: "trunk" },
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: `2026-10-30T09:00:${String(second).padStart(2, "0")}Z`,
+    full_status: "open",
+    common_status: "waiting_for_review",
+    review_status: "waiting_for_review",
+    checks: arcanumChecks("success"),
+    ...overrides,
+  };
+}
+
+/**
+ * The pull request service over the real Arcanum driver, behind an HTTP fake: `rows` is the open
+ * listing as it stands at each read, and `answer` serves any other path below `/api`.
+ */
+const makeArcanumService = (input: {
+  readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
+  readonly rows?: () => ReadonlyArray<Record<string, unknown>>;
+  readonly answer?: (path: string, query: URLSearchParams) => unknown;
+  /** A response that replaces the scripted one, such as a 429. */
+  readonly respond?: (path: string, authorization: string | undefined) => Response | undefined;
+  /** Every request, as `path` and the credential it carried. */
+  readonly sent?: Array<{ readonly path: string; readonly authorization: string | undefined }>;
+  /** Read on every request, so a test can replace the token. */
+  readonly env?: { readonly ARC_TOKEN: string };
+  readonly review?: Partial<SourceControlHost.SourceControlHost["Service"]["review"]>;
+}) =>
+  Effect.gen(function* () {
+    const client = HttpClient.make((request) => {
+      const url = new URL(request.url);
+      assert.strictEqual(url.origin, "https://arcanum.yandex.net");
+      const path = url.pathname.replace(/^\/api/u, "");
+      input.sent?.push({ path, authorization: request.headers.authorization });
+      const replaced = input.respond?.(path, request.headers.authorization);
+      if (replaced !== undefined) {
+        return Effect.succeed(HttpClientResponse.fromWeb(request, replaced));
+      }
+      let body: unknown;
+      if (path === "/v1/review-requests" && input.rows !== undefined) {
+        assert.strictEqual(url.searchParams.get("order"), "-updated_at,-id");
+        // Arcanum's order: newest update first, then highest id.
+        const rows = input
+          .rows()
+          .toSorted(
+            (left, right) =>
+              String(right["updated_at"]).localeCompare(String(left["updated_at"])) ||
+              Number(right["id"]) - Number(left["id"]),
+          );
+        const offset = Number(url.searchParams.get("offset"));
+        const limit = Number(url.searchParams.get("limit"));
+        body = {
+          data: { review_requests: rows.slice(offset, offset + limit), total_count: rows.length },
+        };
+      } else {
+        body = input.answer?.(path, url.searchParams) ?? { data: [] };
+      }
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json", "x-arcanum-user": "alice" },
+          }),
+        ),
+      );
+    });
+    const instance = yield* ArcanumDriver.driver.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          TestSourceControlHost.layer(input.review === undefined ? {} : { review: input.review }),
+          Layer.succeed(HttpClient.HttpClient, client),
+          SourceControlRateLimit.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+      Effect.provideService(ArcanumDriver.RequestSpacingMs, 0),
+      Effect.provideService(HostProcess.Environment, input.env ?? { ARC_TOKEN: "test-token" }),
+    );
+    return yield* makeService({
+      projects: input.projects ?? [
+        project({
+          id: "p1",
+          title: "arcadia",
+          workspaceRoot: "/arc",
+          repository: "arcadia",
+          provider: "arcanum",
+          host: "a.yandex-team.ru",
+          remoteUrl: "arc://arc-vcs.yandex-team.ru/arcadia",
+        }),
+      ],
+      providers: [instance.pullRequests!],
+    });
+  });
+
+/** Every listing slice the service hands out, following its cursors until it stops. */
+const listAll = (
+  service: Effect.Success<ReturnType<typeof makeService>>,
+  input: Parameters<typeof service.list>[0],
+  between: (slice: number) => void = () => undefined,
+) =>
+  Effect.gen(function* () {
+    let page = yield* service.list(input);
+    const slices = [page.entries.map((entry) => entry.number)];
+    for (let slice = 1; slice < 8 && Object.keys(page.nextCursors).length > 0; slice++) {
+      between(slice);
+      page = yield* service.list({ ...input, cursors: page.nextCursors });
+      slices.push(page.entries.map((entry) => entry.number));
+    }
+    assert.deepStrictEqual(page.nextCursors, {});
+    return slices;
+  });
+
+it.effect("reaches matching Arcanum rows behind slices its checks filter left empty", () =>
+  Effect.gen(function* () {
+    // Twelve open rows, newest first: the ten newest are still running checks, the last two pass.
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      arcanumRow(index + 1, 59 - index, {
+        checks: arcanumChecks(index >= 10 ? "success" : "pending"),
+      }),
+    );
+    const service = yield* makeArcanumService({ rows: () => rows });
+    const slices = yield* listAll(service, {
+      state: "open",
+      limit: 2,
+      filters: { checks: "passing" },
+    });
+    assert.deepStrictEqual(slices.flat(), [11, 12]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("carries an Arcanum listing on past rows that left it, ties included", () =>
+  Effect.gen(function* () {
+    // 2 and 3 share an instant, and Arcanum lists 3 first, so the first slice ends mid-tie.
+    let rows = [
+      arcanumRow(1, 59),
+      arcanumRow(2, 58),
+      arcanumRow(3, 58),
+      arcanumRow(4, 57),
+      arcanumRow(5, 56),
+    ];
+    const service = yield* makeArcanumService({ rows: () => rows });
+    const slices = yield* listAll(service, { state: "open", limit: 2 }, (slice) => {
+      // After the first slice 1 merges and leaves the open listing, which moves every offset up.
+      if (slice === 1) rows = rows.slice(1);
+      // After the second, two newer pull requests open, which moves every offset down.
+      if (slice === 2) rows = [arcanumRow(7, 59), arcanumRow(6, 59), ...rows];
+    });
+    assert.deepStrictEqual(slices, [[1, 3], [2, 4], [5]]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reaches Arcanum rows behind more rejected rows in one instant than a slice reads", () =>
+  Effect.gen(function* () {
+    // 300 rows still running checks, all updated together, then two passing rows in that same
+    // instant and one older one.
+    let rows = [
+      ...Array.from({ length: 300 }, (_, index) =>
+        arcanumRow(1000 + index, 50, { checks: arcanumChecks("pending") }),
+      ),
+      arcanumRow(2, 50),
+      arcanumRow(1, 50),
+      arcanumRow(500, 40),
+    ];
+    const service = yield* makeArcanumService({ rows: () => rows });
+    const slices = yield* listAll(
+      service,
+      { state: "open", limit: 2, filters: { checks: "passing" } },
+      (slice) => {
+        // Rows already scanned leave, the one the slice stopped at among them.
+        if (slice === 1) rows = rows.filter((row) => row.id < 1000 || row.id > 1100);
+      },
+    );
+    assert.deepStrictEqual(slices.flat(), [2, 1, 500]);
+    // Every slice reached something new: none repeated the rejected run.
+    assert.isAtMost(slices.length, 4);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("keeps Arcanum checks without links when their links list never ends", () =>
+  Effect.gen(function* () {
+    const detail = {
+      ...arcanumRow(101, 30),
+      merge_allowed: false,
+      policies: { auto_merge: "disabled" },
+      active_diff_set: {
+        id: 9001,
+        status: "published",
+        has_conflicts: false,
+        patch_stats: { additions: 1, deletions: 0 },
+        arc_branch_heads: {
+          from_id: "1".repeat(40),
+          to_id: "2".repeat(40),
+          merge_id: "3".repeat(40),
+        },
+      },
+      review: { review_status: "review_in_progress", reviewers: [] },
+      assignees: [],
+    };
+    const success = (cursor: string) => ({
+      data: {
+        checks: [{ key: { system: "CI", type: "build" }, uri: "https://ci/build" }],
+        next_page_cursor: cursor,
+      },
+    });
+    const service = yield* makeArcanumService({
+      answer: (path) =>
+        path === "/v1/review-requests/101"
+          ? { data: detail }
+          : path === "/v1/review-requests/101/diff-sets/9001/diff-stats"
+            ? { data: { changes_count: 1 } }
+            : path === "/v2/public/diff/9001/checks"
+              ? // The same cursor every time: the list never ends.
+                success("again")
+              : undefined,
+    });
+    const ref = {
+      projectId: "p1" as ProjectId,
+      host: "a.yandex-team.ru",
+      repository: "arcadia",
+      number: 101,
+    };
+    const checks = yield* service.checks(ref);
+    assert.deepStrictEqual(
+      checks?.checks.map((check) => [check.status, check.url]),
+      [["success", null]],
+    );
+  }).pipe(Effect.scoped),
+);
+
+const arcanumDetail = (overrides: Record<string, unknown> = {}) => ({
+  ...arcanumRow(101, 30),
+  description: "Body",
+  merge_allowed: false,
+  policies: { auto_merge: "disabled" },
+  active_diff_set: {
+    id: 9001,
+    status: "published",
+    has_conflicts: false,
+    patch_stats: { additions: 1, deletions: 0 },
+    arc_branch_heads: {
+      from_id: "1".repeat(40),
+      to_id: "2".repeat(40),
+      merge_id: "3".repeat(40),
+    },
+  },
+  review: { review_status: "review_in_progress", reviewers: [] },
+  assignees: [],
+  ...overrides,
+});
+const arcanumAnswers = (detail: () => unknown) => (path: string) =>
+  path === "/v1/review-requests/101"
+    ? { data: detail() }
+    : path === "/v1/review-requests/101/diff-sets/9001/diff-stats"
+      ? { data: { changes_count: 1 } }
+      : path === "/v2/public/diff/9001/checks"
+        ? { data: { checks: [] } }
+        : path === "/v2/users/me"
+          ? { data: { name: "alice", outstaff: false, banned: false } }
+          : undefined;
+const arcanumRef = {
+  projectId: "p1" as ProjectId,
+  host: "a.yandex-team.ru",
+  repository: "arcadia",
+  number: 101,
+};
+
+it.effect.each([
+  { repositories: ["arcadia", "cloudia"] },
+  { repositories: ["cloudia", "arcadia"] },
+  { repositories: ["cloudia"] },
+])("opens Cloudia from Arcanum metadata with projects ordered $repositories", ({ repositories }) =>
+  Effect.gen(function* () {
+    const projects = repositories.map((repository) =>
+      project({
+        id: repository,
+        title: repository,
+        workspaceRoot: `/${repository}`,
+        repository,
+        provider: "arcanum",
+        host: "a.yandex-team.ru",
+        remoteUrl: `arc://arc-vcs.yandex-team.ru/${repository}`,
+      }),
+    );
+    const service = yield* makeArcanumService({
+      projects,
+      answer: arcanumAnswers(() =>
+        arcanumDetail({
+          vcs: {
+            arc_repo_name: "cloudia",
+            from_branch: "users/alice/cloudia",
+            to_branch: "trunk",
+          },
+        }),
+      ),
+    });
+    const detail = yield* service.detail({ ...arcanumRef, projectId: projects[0]!.id });
+    expect(detail).toMatchObject({
+      projectId: "cloudia",
+      repository: "cloudia",
+      workspaceRoot: "/cloudia",
+    });
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "routes a review linked from another host's project to the checkout its host resolves",
+  () =>
+    Effect.gen(function* () {
+      const ran: string[] = [];
+      const arcProject = (repository: string) =>
+        project({
+          id: repository,
+          title: repository,
+          workspaceRoot: `/${repository}`,
+          repository,
+          provider: "arcanum",
+          host: "a.yandex-team.ru",
+          remoteUrl: `arc://arc-vcs.yandex-team.ru/${repository}`,
+        });
+      const service = yield* makeService({
+        projects: [
+          project({ id: "git", title: "git", workspaceRoot: "/git", repository: "acme/web" }),
+          arcProject("arcadia"),
+          arcProject("cloudia"),
+        ],
+        providers: [
+          fakePullRequestProvider(SourceControlProviderKind.make("github")),
+          fakePullRequestProvider(SourceControlProviderKind.make("arcanum"), {
+            resolveChangeRequestRepository: () => Effect.succeed("cloudia"),
+            runAction: (input) =>
+              Effect.sync(() => {
+                ran.push(input.cwd);
+              }),
+          }),
+        ],
+      });
+      yield* service.runAction({
+        ...arcanumRef,
+        projectId: "git" as ProjectId,
+        action: "close",
+      });
+      assert.deepStrictEqual(ran, ["/cloudia"]);
+    }),
+);
+
+it.effect("opens an Arcanum pull request with one read of it, and its CI links in one more", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    const service = yield* makeArcanumService({
+      sent,
+      answer: arcanumAnswers(() => arcanumDetail()),
+      review: { rangeCommits: () => Effect.succeed({ commits: [], truncated: false }) },
+    });
+    yield* Effect.all([service.detail(arcanumRef), service.activity(arcanumRef)], {
+      concurrency: 2,
+    });
+    yield* service.checks(arcanumRef);
+    assert.deepStrictEqual(sent.map((request) => request.path).toSorted(), [
+      "/v1/public/review-requests/101/comments",
+      "/v1/review-requests/101",
+      "/v1/review-requests/101/diff-sets/9001/diff-stats",
+      "/v2/public/diff/9001/checks",
+      "/v2/public/diff/9001/comment",
+      "/v2/users/me",
+    ]);
+    // Past the read's own reuse window, the detail cache still answers, routing included.
+    const before = sent.length;
+    yield* TestClock.adjust("6 seconds");
+    yield* service.detail(arcanumRef);
+    assert.equal(sent.length, before);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("reads an Arcanum pull request again once the server's token changes", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    const env = { ARC_TOKEN: "first" };
+    let title = "Before";
+    const service = yield* makeArcanumService({
+      sent,
+      env,
+      answer: arcanumAnswers(() => arcanumDetail({ summary: title })),
+    });
+    assert.equal((yield* service.detail(arcanumRef)).title, "Before");
+    env.ARC_TOKEN = "second";
+    title = "After";
+    assert.equal((yield* service.detail(arcanumRef)).title, "After");
+    assert.equal(
+      sent.filter((request) => request.path === "/v1/review-requests/101").at(-1)?.authorization,
+      "OAuth second",
+    );
+  }).pipe(Effect.scoped),
+);
+
+/** Arcanum's answer for the account a token belongs to: `OAuth alice` is alice. */
+const accountAnswer = (path: string, authorization: string | undefined) => {
+  const login = authorization?.replace(/^OAuth /u, "") ?? "nobody";
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-arcanum-user": login },
+    });
+  if (path === "/v2/users/me")
+    return json({ data: { name: login, outstaff: false, banned: false } });
+  const number = /^\/v1\/review-requests\/(\d+)$/u.exec(path)?.[1];
+  return number === undefined
+    ? undefined
+    : json({ data: arcanumDetail({ id: Number(number), summary: `Read as ${login}` }) });
+};
+
+it.effect("reads a local Arcanum pull request with the one token its cache key names", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    // The token changes right after the read picks its cache key, as a saved token can.
+    let reads = 0;
+    let settled = false;
+    const env = {
+      get ARC_TOKEN() {
+        reads += 1;
+        return settled || reads === 1 ? "alice" : "bob";
+      },
+    };
+    const service = yield* makeArcanumService({
+      sent,
+      env,
+      answer: arcanumAnswers(() => arcanumDetail()),
+      respond: accountAnswer,
+    });
+    const first = yield* service.detail(arcanumRef);
+    assert.equal(first.title, "Read as alice");
+    assert.deepStrictEqual(
+      [...new Set(sent.map((request) => request.authorization))],
+      ["OAuth alice"],
+    );
+    settled = true;
+    assert.equal((yield* service.detail(arcanumRef)).title, "Read as alice");
+  }).pipe(Effect.scoped),
+);
+
+it.effect("lists Arcanum with one token for the viewer and every page", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    let reads = 0;
+    let settled = false;
+    const env = {
+      get ARC_TOKEN() {
+        reads += 1;
+        return settled || reads === 1 ? "alice" : "bob";
+      },
+    };
+    const service = yield* makeArcanumService({
+      sent,
+      env,
+      rows: () => [arcanumRow(1, 59), arcanumRow(2, 58)],
+      respond: (path, authorization) =>
+        path === "/v2/users/me" ? accountAnswer(path, authorization) : undefined,
+    });
+    const page = yield* service.list({ state: "open", involvement: "authored" });
+    assert.equal(page.viewers["a.yandex-team.ru"], "alice");
+    assert.deepStrictEqual(
+      [...new Set(sent.map((request) => request.authorization))],
+      ["OAuth alice"],
+    );
+    // Bob's token is a listing of its own, never Alice's held one.
+    settled = false;
+    reads = 1;
+    const before = sent.length;
+    yield* service.list({ state: "open", involvement: "authored" });
+    assert.isTrue(sent.slice(before).every((request) => request.authorization === "OAuth bob"));
+    assert.isAbove(sent.length, before);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("records a 429 under the token that received it, not the one saved since", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    let token = "alice";
+    const service = yield* makeArcanumService({
+      sent,
+      env: {
+        get ARC_TOKEN() {
+          return token;
+        },
+      },
+      answer: arcanumAnswers(() => arcanumDetail()),
+      respond: (path, authorization) => {
+        if (path === "/v1/review-requests/101" && authorization === "OAuth alice") {
+          // Bob's token is saved while Alice's read is answered.
+          token = "bob";
+          return new Response(null, { status: 429, headers: { "retry-after": "3600" } });
+        }
+        return accountAnswer(path, authorization);
+      },
+    });
+    yield* Effect.flip(service.preview(arcanumRef));
+    const before = sent.length;
+    const bob = yield* service.preview({ ...arcanumRef, number: 102 });
+    assert.equal(bob.title, "Read as bob");
+    assert.isTrue(sent.slice(before).some((request) => request.authorization === "OAuth bob"));
+  }).pipe(Effect.scoped),
+);
+
+it.effect("pauses background Arcanum reads only for the token Arcanum rate limited", () =>
+  Effect.gen(function* () {
+    const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+    const env = { ARC_TOKEN: "first" };
+    const service = yield* makeArcanumService({
+      sent,
+      env,
+      answer: arcanumAnswers(() => arcanumDetail()),
+      respond: (path, authorization) =>
+        path === "/v1/review-requests/101" && authorization === "OAuth first"
+          ? new Response(null, { status: 429, headers: { "retry-after": "3600" } })
+          : undefined,
+    });
+    const limited = yield* Effect.flip(service.detail({ ...arcanumRef, allowStale: false }));
+    assert.include(limited.message, "rate limiting");
+    const before = sent.length;
+    yield* Effect.flip(service.checks(arcanumRef));
+    yield* Effect.flip(service.preview(arcanumRef));
+    assert.equal(sent.length, before);
+    env.ARC_TOKEN = "second";
+    yield* service.checks(arcanumRef);
+    assert.isTrue(sent.slice(before).every((request) => request.authorization === "OAuth second"));
+    assert.isAbove(sent.length, before);
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "spends one raw page per Arcanum listing per slice on a checks filter that matches nothing",
+  () =>
+    Effect.gen(function* () {
+      const sent: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+      const rows = Array.from({ length: 3000 }, (_, index) =>
+        arcanumRow(index + 1, 59 - (index % 60), { checks: arcanumChecks("pending") }),
+      );
+      const service = yield* makeArcanumService({
+        sent,
+        rows: () => rows,
+        answer: arcanumAnswers(() => arcanumDetail()),
+      });
+      const page = yield* service.list({
+        state: "open",
+        limit: 99,
+        filters: { checks: "passing" },
+      });
+      assert.deepStrictEqual(page.entries, []);
+      // Nothing matched within the budget, so the listing says where it may carry on.
+      assert.isTrue(page.truncated);
+      assert.lengthOf(Object.keys(page.nextCursors), 1);
+      const listReads = sent.filter((request) => request.path === "/v1/review-requests");
+      // All reads the authored and the reviewing listing in each of the five slices.
+      assert.lengthOf(listReads, 10);
+    }).pipe(Effect.scoped),
 );
 
 it.effect(
@@ -1832,6 +2532,7 @@ it.effect("stops new reads after a rate limit while leaving manual actions avail
   Effect.gen(function* () {
     let listCalls = 0;
     let actionCalls = 0;
+    const routedInteractively: boolean[] = [];
     const service = yield* makeService({
       projects: [
         project({ id: "p1", title: "cloud", workspaceRoot: "/cloud", repository: "acme/web" }),
@@ -1857,18 +2558,23 @@ it.effect("stops new reads after a rate limit while leaving manual actions avail
             Effect.sync(() => {
               actionCalls += 1;
             }),
+          resolveChangeRequestRepository: () =>
+            Effect.map(SourceControlRateLimit.Interactive, (interactive) => {
+              routedInteractively.push(interactive);
+              return "acme/web";
+            }),
         }),
       ],
     });
 
     const first = yield* service.list({ state: "open", involvement: "all" });
     const paused = yield* service.list({ state: "open", involvement: "authored" });
-    yield* service.runAction({
-      projectId: "p1" as ProjectId,
-      repository: "acme/web",
-      number: 1,
-      action: "close",
-    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    yield* Effect.flip(service.detail(ref));
+    const background = routedInteractively.splice(0);
+    yield* service.runAction({ ...ref, action: "close" });
+    assert.isTrue(background.length > 0 && background.every((interactive) => !interactive));
+    assert.isTrue(routedInteractively.length > 0 && routedInteractively.every(Boolean));
 
     assert.strictEqual(listCalls, 1);
     assert.strictEqual(actionCalls, 1);
@@ -3422,6 +4128,7 @@ it.effect("isolates routed caches for two credentials belonging to the same acco
                   credentialFingerprint: credential,
                 }),
               ),
+            detailChecksComplete: true,
             getChangeRequest: read,
             getChangeRequestChecks: read,
             getChangeRequestSummary: read,
@@ -3668,6 +4375,7 @@ it.effect.each(["github", "azure-devops"])(
         ],
         providers: [
           fakePullRequestProvider(SourceControlProviderKind.make(provider), {
+            detailChecksComplete: true,
             getChangeRequest: () =>
               Effect.succeed({
                 ...hostedChangeRequest("Description"),
@@ -3699,6 +4407,28 @@ it.effect.each(["github", "azure-devops"])(
       yield* service.detail(reference);
       expect((yield* service.checks(reference))?.state).toBe("closed");
       expect(reads).toBe(1);
+
+      // A detail that may carry only part of the checks never answers for all of them.
+      let partialReads = 0;
+      const partial = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+        ],
+        providers: [
+          fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+            getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
+            getChangeRequestChecks: () =>
+              Effect.sync(() => {
+                partialReads += 1;
+                return { state: "open" as const, checks: [] };
+              }),
+          }),
+        ],
+      });
+      const partialReference = { ...reference, repository: "acme/web" };
+      yield* partial.detail(partialReference);
+      yield* partial.checks(partialReference);
+      expect(partialReads).toBe(1);
     }),
 );
 

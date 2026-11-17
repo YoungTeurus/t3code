@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverClose, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { PullRequestCommentForm } from "./PullRequestCommentForm";
+import { PullRequestReviewActions } from "./PullRequestReviewActions";
 import { PullRequestReviewForm } from "./PullRequestReviewForm";
 import {
   pullRequestReviewKey,
@@ -166,6 +167,15 @@ export function PullRequestComposer({
               pending={reviewPending}
               onPendingChange={setReviewPending}
               onSubmitted={() => {
+                setOpen(false);
+                onReviewSubmitted();
+              }}
+            />
+            <PullRequestReviewActions
+              environmentId={environmentId}
+              reference={reference}
+              detail={detail}
+              onDone={() => {
                 setOpen(false);
                 onReviewSubmitted();
               }}

@@ -16,6 +16,8 @@ import { SegmentedControl } from "../../components/ui/SegmentedControl";
 import { composerPullRequests } from "../../state/pull-requests";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { PullRequestIssueToggle } from "./PullRequestIssueControls";
+import { PullRequestReviewActions } from "./PullRequestReviewActions";
 import { PullRequestSheetContent as SheetContent } from "./PullRequestSheetContent";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
 import { usePullRequestPermissions } from "./usePullRequestPermissions";
@@ -92,6 +94,7 @@ export function PullRequestReviewSheet({
   });
   const stale = store.draft.comments.some((comment) => comment.headSha !== result.data?.headSha);
   const [requestedVerdict, setRequestedVerdict] = useState<PullRequestReviewVerdict>("comment");
+  const [isIssue, setIsIssue] = useState(false);
   const offered = VERDICTS.filter((option) => permissions.verdicts.includes(option.value));
   const verdict = offered.find((option) => option.value === requestedVerdict) ?? offered[0];
   const reviewing = params.mode === "review";
@@ -133,7 +136,10 @@ export function PullRequestReviewSheet({
                 })),
               },
             })
-          : await comment({ ...target, input: { ...target.input, body } });
+          : await comment({
+              ...target,
+              input: { ...target.input, body, ...(isIssue ? { isIssue } : {}) },
+            });
       if (response._tag === "Failure") throw squashAtomCommandFailure(response);
       store.update((current) =>
         reviewing
@@ -178,6 +184,14 @@ export function PullRequestReviewSheet({
           size="compact"
         />
       ) : null}
+      {reviewing ? (
+        <PullRequestReviewActions
+          params={params}
+          pr={result.data}
+          busy={submission.busy}
+          submit={submission.submit}
+        />
+      ) : null}
       <Text className="px-4 text-xs text-foreground-muted">
         {reviewing ? "Summary" : "Comment"}
       </Text>
@@ -203,6 +217,14 @@ export function PullRequestReviewSheet({
         className="min-h-36 rounded-[20px] bg-grouped-card p-4 text-base text-foreground"
         style={{ textAlignVertical: "top" }}
       />
+      {reviewing ? null : (
+        <PullRequestIssueToggle
+          pr={result.data}
+          value={isIssue}
+          disabled={submission.busy}
+          onValueChange={setIsIssue}
+        />
+      )}
       {reviewing && store.draft.comments.length ? (
         <View className="gap-2">
           <Text className="text-sm font-t3-medium">

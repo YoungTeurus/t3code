@@ -26,6 +26,9 @@ the parent conversation with the subagent's name, so you can respond without swi
 
 ## Provider differences
 
+Codex modes follow its corporate managed requirements. T3 preserves workspace network access
+from `config.toml`, including access needed to run `arc`, when it sends a workspace-write policy.
+
 Providers enforce permissions differently. Some read-only actions can proceed in **Supervised**.
 **Auto** uses automatic review on Codex, Claude, Cursor, Grok, and fx; providers without an equivalent,
 including OpenCode and Antigravity, fall back to asking. On Grok, commands its review blocks come

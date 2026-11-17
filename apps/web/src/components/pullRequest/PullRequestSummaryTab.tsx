@@ -38,6 +38,7 @@ import { useClientSettings } from "~/hooks/useSettings";
 import { formatFullTimestamp } from "~/timestampFormat";
 
 import { Button } from "../ui/button";
+import { PullRequestCheckActions } from "./PullRequestCheckActions";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import {
@@ -63,6 +64,8 @@ import {
 } from "./pullRequestPresentation";
 import { PullRequestLabelPicker } from "./PullRequestLabelPicker";
 import { PullRequestReviewerPicker } from "./PullRequestReviewerPicker";
+import { PullRequestReviewProgress } from "./PullRequestReviewProgress";
+import { PullRequestCommentIssue } from "./PullRequestIssueControls";
 import { PullRequestActivityUnavailableState } from "./PullRequestActivityUnavailableState";
 import {
   filterPullRequestConversationItems,
@@ -88,6 +91,7 @@ import {
   type DescriptionDraft,
 } from "@t3tools/client-runtime/pull-request-editing";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskList";
+import { nestThreadReplies, withThreadRoots } from "@t3tools/client-runtime/pull-request-review";
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestCommentBody } from "./PullRequestCommentBody";
 import { PullRequestMoreReplies } from "./PullRequestMoreReplies";
@@ -501,12 +505,19 @@ export function PullRequestSummaryTab({
       (count, item) => count + pullRequestConversationItemComments(item).length,
       0,
     );
-  const { shown: recentItems, hidden: hiddenConversationCount } = pagePullRequestConversationItems(
-    filteredItems,
-    shownConversations,
-  );
+  const page = pagePullRequestConversationItems(filteredItems, shownConversations);
+  const threadMember = (item: PullRequestConversationItem) =>
+    item.kind === "comment" ? item.comment : undefined;
+  // A filter or page can drop a thread's root while keeping its replies.
+  const recentItems = withThreadRoots(page.shown, items, threadMember);
+  const shownSet = new Set(recentItems);
+  const hiddenConversationCount = filteredItems.filter((item) => !shownSet.has(item)).length;
   const [commentOrder, setCommentOrder] = useState<"newest" | "oldest">("newest");
-  const visibleItems = orderPullRequestComments(recentItems, commentOrder);
+  const nestedItems = nestThreadReplies(
+    orderPullRequestComments(recentItems, commentOrder),
+    threadMember,
+  );
+  const visibleItems = nestedItems.items;
   const showOldestCommentsButton =
     hiddenConversationCount > 0 ? (
       <Button
@@ -770,6 +781,12 @@ export function PullRequestSummaryTab({
           {onAddToChat && chat !== null ? (
             <AddToChatButton onClick={() => onAddToChat(chat)} />
           ) : null}
+          <PullRequestCommentIssue
+            comment={comment}
+            environmentId={environmentId}
+            reference={reference}
+            onDone={onRefresh}
+          />
           {reactionBarFor(comment)}
         </div>
         {reply ? null : (
@@ -804,7 +821,13 @@ export function PullRequestSummaryTab({
           editing={commentEditing}
           detail={detail}
           thread={thread}
-          label={thread?.isResolved ? "Resolved" : "Review dismissed"}
+          label={
+            thread?.issueState === "dropped"
+              ? "Dropped"
+              : thread?.isResolved
+                ? "Resolved"
+                : "Review dismissed"
+          }
           body={visibleBody(comment.body)}
           replyCount={item.kind === "thread" ? item.replies.length + item.moreReplies : 0}
           replies={replies}
@@ -813,6 +836,16 @@ export function PullRequestSummaryTab({
           reactionBar={reactionBarFor(comment)}
           resolveButton={resolveButtonFor(thread)}
         />
+      );
+    }
+    if (item.kind === "comment" && nestedItems.replies.has(item)) {
+      return (
+        <div
+          key={`${detail.url}:reply:${item.id}`}
+          className="ml-4 border-l-2 border-border/60 pl-3"
+        >
+          {renderCommentCard(comment, undefined, { reply: true })}
+        </div>
       );
     }
     if (item.kind === "comment") return renderCommentCard(comment, undefined);
@@ -910,6 +943,7 @@ export function PullRequestSummaryTab({
               ) : null}
             </span>
           </MetaRow>
+          <PullRequestReviewProgress detail={detail} />
           {detail.labels.length > 0 || detail.capabilities.labels === true ? (
             <MetaRow icon={<TagIcon className="size-3.5" />} label="Labels">
               <span className="flex min-w-0 flex-wrap items-center gap-1">
@@ -987,6 +1021,18 @@ export function PullRequestSummaryTab({
         defaultOpen={false}
         revealCount={checksReveals}
       >
+        {(detail.checkActions?.length ?? 0) > 0 && !checksStale ? (
+          <div className="flex justify-end pb-1">
+            <PullRequestCheckActions
+              environmentId={environmentId}
+              reference={reference}
+              detail={detail}
+              check={null}
+              actions={detail.checkActions ?? []}
+              onDone={onRefresh}
+            />
+          </div>
+        ) : null}
         {checksStale ? (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span>Check details are out of date.</span>
@@ -1024,6 +1070,14 @@ export function PullRequestSummaryTab({
                         {pullRequestCheckStatusLabel(check)}
                       </span>
                     </button>
+                    <PullRequestCheckActions
+                      environmentId={environmentId}
+                      reference={reference}
+                      detail={detail}
+                      check={check.name}
+                      actions={check.actions ?? []}
+                      onDone={onRefresh}
+                    />
                     {onFixFinding && failing ? (
                       <Button
                         size="xs"

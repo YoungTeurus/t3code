@@ -34,6 +34,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdateComment]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsSubmitReview]: AuthSourceControlWriteScope,
+  [WS_METHODS.pullRequestsRunReviewAction]: AuthSourceControlWriteScope,
+  [WS_METHODS.pullRequestsRunCheckAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsReplyToThread]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsSetThreadResolution]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsSetReaction]: AuthSourceControlWriteScope,

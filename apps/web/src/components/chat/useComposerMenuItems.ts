@@ -44,6 +44,7 @@ import {
   type EnvironmentQueryTarget,
 } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { useComposerPathSearch, useDebouncedValue, useThreadSearch } from "~/state/queries";
 import {
   matchesPullRequestQuery,
@@ -467,5 +468,8 @@ export function useComposerMenuItems({
         ? "Plugin inventory is not available. Refresh the provider to load plugins."
         : selectedProviderPluginCatalog.message
       : undefined;
-  return { items, isLoading, emptyState, notice };
+  const pathSource =
+    composerTriggerKind === "path" ? describeSearchSource(workspaceEntries.source) : null;
+
+  return { items, isLoading, emptyState, notice, note: pathSource?.note ?? null };
 }

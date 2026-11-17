@@ -22,6 +22,7 @@ export interface TestSourceControlHostOptions {
   readonly settings?: ServerSettings;
   readonly process?: Partial<SourceControlHost.SourceControlHost["Service"]["process"]>;
   readonly git?: Partial<SourceControlHost.SourceControlHost["Service"]["git"]>;
+  readonly review?: Partial<SourceControlHost.SourceControlHost["Service"]["review"]>;
 }
 
 export class TestSourceControlHostSettings extends Context.Service<
@@ -65,6 +66,15 @@ export const layer = (
           run:
             options.process?.run ??
             ((input) => Effect.die(`Unexpected ${input.command} run in ${input.operation}.`)),
+        },
+        review: {
+          commitDiff: () =>
+            Effect.die("Unexpected review.commitDiff in a test that supplied none."),
+          commitFileContents: () =>
+            Effect.die("Unexpected review.commitFileContents in a test that supplied none."),
+          rangeCommits: () =>
+            Effect.die("Unexpected review.rangeCommits in a test that supplied none."),
+          ...options.review,
         },
         git: { ...failingGit, ...options.git },
       });

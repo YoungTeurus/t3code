@@ -29,6 +29,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
+import type { VcsManagedWorktrees } from "./vcs/VcsManagedWorktrees.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as Settings from "./serverSettings.ts";
@@ -334,6 +336,7 @@ const cleanupFixture = (
     worktreeOnDelete: true,
   },
   sqlOverride?: SqlClient.SqlClient,
+  native?: (scope: string) => VcsManagedWorktrees,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -374,6 +377,14 @@ const cleanupFixture = (
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
+      Effect.provideService(VcsDriverRegistry.VcsDriverRegistry, {
+        detect: () =>
+          Effect.succeed(
+            native === undefined
+              ? null
+              : { kind: "arc", driver: { workspace: { managedWorktrees: native(worktree) } } },
+          ),
+      } as unknown as VcsDriverRegistry.VcsDriverRegistry["Service"]),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
@@ -2637,6 +2648,46 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
+  it.effect.each(["owned", "manual", "shared"] as const)(
+    "cleans only an exclusively owned Arc copy (%s)",
+    (kind) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(NOW_MS);
+          const removed: string[] = [];
+          const fixture = yield* cleanupFixture(undefined, undefined, (scope) => ({
+            inspect: () =>
+              Effect.succeed(
+                kind === "manual"
+                  ? { _tag: "Keep", reason: "T3 has no record of creating this Arc copy" }
+                  : { _tag: "Candidate", worktree: { scope, head: "head", unchanged: true } },
+              ),
+            remove: (input) =>
+              Effect.gen(function* () {
+                const reason = yield* input.guard;
+                if (reason === null) removed.push(scope);
+                return reason;
+              }),
+          }));
+          if (kind === "shared")
+            fixture.setThreads([
+              shell({ branch: "feature", worktreePath: fixture.worktree }),
+              shell({
+                id: ThreadId.make("thread-2"),
+                branch: "feature",
+                worktreePath: `${fixture.worktree}/other-project`,
+              }),
+            ]);
+          const report = yield* fixture.service.runNow;
+          expect(removed, JSON.stringify(report.entries)).toEqual(
+            kind === "owned" ? [fixture.worktree] : [],
+          );
+          expect(report.entries.find((entry) => entry.path === fixture.worktree)?.outcome).toBe(
+            kind === "owned" ? "removed" : "kept",
+          );
+        }),
+      ),
+  );
   it.effect("removes an idle No project thread's scratch folder past the retention", () =>
     runCleanupTest(
       Effect.gen(function* () {
@@ -2673,6 +2724,12 @@ describe("storage cleanup reports and local file policies", () => {
       policy: "tracked-changes",
       repository: ".git",
       reason: "Contains a nested Git repository",
+    },
+    {
+      name: "an Arc mount in a subfolder",
+      policy: "tracked-changes",
+      repository: "arcadia/.arc",
+      reason: "Contains an Arc checkout",
     },
     { name: "files under the default keep rule", reason: "Has local files (notes.md)" },
     {

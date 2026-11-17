@@ -8,6 +8,7 @@ import { useRenderedAppearance, useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useProjectContentSearch } from "~/state/queries";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { readEnvironmentScope } from "~/state/session";
 
 import { PierreEntryIcon } from "../chat/PierreEntryIcon";
@@ -157,6 +158,7 @@ function OpenContentSearchDialog(props: {
     useRightPanelStore.getState().openFile(target.threadRef, match.path, match.lineNumber);
   };
   const fileCount = new Set(matches.map((match) => match.path)).size;
+  const source = describeSearchSource(search.source);
   const showSearchStatus =
     search.canReadFiles &&
     (search.hasQuery || search.isPending || search.error !== null || search.invalidRegex);
@@ -236,7 +238,15 @@ function OpenContentSearchDialog(props: {
           ) : search.invalidRegex ? (
             <span className="text-destructive">Invalid regular expression</span>
           ) : (
-            `${matches.length.toLocaleString()}${search.truncated ? "+" : ""} results in ${fileCount.toLocaleString()} files`
+            <span>
+              {`${matches.length.toLocaleString()}${search.truncated ? "+" : ""} results in ${fileCount.toLocaleString()} files`}
+              {source ? (
+                <Tooltip>
+                  <TooltipTrigger render={<span />}>{` · ${source.label}`}</TooltipTrigger>
+                  <TooltipPopup side="bottom">{source.detail}</TooltipPopup>
+                </Tooltip>
+              ) : null}
+            </span>
           )}
         </div>
       ) : null}
@@ -248,7 +258,9 @@ function OpenContentSearchDialog(props: {
             : !search.canReadFiles
               ? search.error
               : search.hasQuery && !search.isPending && !search.error
-                ? "No results found."
+                ? source
+                  ? `No results in ${source.label}.`
+                  : "No results found."
                 : "Type to search across your project."}
         </div>
       ) : (

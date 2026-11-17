@@ -15,7 +15,8 @@ export function MarkdownDetails({
   children,
   open = false,
   dir,
-}: Pick<ComponentProps<"details">, "children" | "open" | "dir">) {
+  id,
+}: Pick<ComponentProps<"details">, "children" | "open" | "dir" | "id">) {
   const [isOpen, setIsOpen] = useState(open);
   const searching = use(MarkdownFindContext);
   const expanded = isOpen;
@@ -35,7 +36,7 @@ export function MarkdownDetails({
   const content = childNodes.filter((_, index) => index !== summaryIndex);
 
   return (
-    <div className="my-2 border-y border-border/60" dir={dir}>
+    <div id={id} className="my-2 border-y border-border/60" dir={dir}>
       <Collapsible
         open={expanded}
         onOpenChange={setIsOpen}

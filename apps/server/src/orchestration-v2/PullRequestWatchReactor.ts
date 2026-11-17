@@ -40,6 +40,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import {
   combinePullRequestWatchWakes,
   evaluatePullRequestWatch,
+  isUnfinishedCheck,
   PULL_REQUEST_WATCH_NO_CHECKS_MS,
   pullRequestWatchMessage,
 } from "./pullRequestWatch.ts";
@@ -688,9 +689,7 @@ export const make = Effect.gen(function* () {
           ? (threadTails.get(group.key)?.fetchedAt ?? now)
           : last.at,
       fingerprint: group.fingerprint,
-      inFlight:
-        detail.mergeability === "unknown" ||
-        detail.checks.some((check) => check.status === "pending"),
+      inFlight: detail.mergeability === "unknown" || detail.checks.some(isUnfinishedCheck),
       remarksComplete: plan.activity ? remarks !== null : (last?.remarksComplete ?? false),
       watches: new Set(group.targets.map(watchKey)),
       status: fingerprint?.status ?? null,

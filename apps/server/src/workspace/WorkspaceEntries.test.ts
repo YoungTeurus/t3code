@@ -102,6 +102,83 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
     vi.restoreAllMocks();
   });
 
+  it.effect("uses remote search without creating a local index or falling back on failure", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTempDir();
+      yield* writeTextFile(cwd, "local-only.ts", "local marker");
+      const queries: string[] = [];
+      const remote: VcsDriver.VcsWorkspaceSearch = {
+        searchEntries: (input) =>
+          Effect.sync(() => {
+            queries.push(input.query);
+            return {
+              entries: [{ path: "remote.ts", kind: "file" as const }],
+              truncated: false,
+              source: { index: "arcadia/trunk", revision: "r1" },
+            };
+          }),
+        searchContents: (input) =>
+          Effect.fail(
+            new VcsDriver.VcsWorkspaceSearchError({ cwd: input.cwd, reason: "unavailable" }),
+          ),
+      };
+      const driver = yield* VcsDriver.VcsDriver.pipe(
+        Effect.provide(
+          Layer.mock(VcsDriver.VcsDriver)({
+            checkpoints: {
+              captureCheckpoint: () => Effect.die("unexpected checkpoint"),
+              hasCheckpointRef: () => Effect.die("unexpected checkpoint"),
+              restoreCheckpoint: () => Effect.die("unexpected checkpoint"),
+              diffCheckpoints: () => Effect.die("unexpected checkpoint"),
+              listAuthoredPaths: () => Effect.die("unexpected checkpoint"),
+              deleteCheckpointRefs: () => Effect.die("unexpected checkpoint"),
+            },
+            workspaceSearch: remote,
+          }),
+        ),
+      );
+      const entries = yield* WorkspaceEntries.make.pipe(
+        Effect.provide(
+          Layer.merge(
+            WorkspaceSearchIndex.WorkspaceSearchIndexMap.layer,
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+              detect: () =>
+                Effect.succeed({
+                  kind: "arc",
+                  driver,
+                  repository: {
+                    kind: "arc",
+                    rootPath: cwd,
+                    metadataPath: `${cwd}/.arc`,
+                    freshness: {
+                      source: "live-local",
+                      observedAt: DateTime.makeUnsafe(0),
+                      expiresAt: Option.none(),
+                    },
+                  },
+                }),
+            }),
+          ),
+        ),
+      );
+      const found = yield* entries.search({ cwd, query: "@./remote", limit: 5 });
+      expect(found.entries).toEqual([{ path: "remote.ts", kind: "file" }]);
+      expect(found.source).toEqual({ index: "arcadia/trunk", revision: "r1" });
+      expect(queries).toEqual(["remote"]);
+      const error = yield* entries
+        .searchContents({
+          cwd,
+          query: "local marker",
+          limit: 5,
+          caseSensitive: false,
+          wholeWord: false,
+          useRegex: false,
+        })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("VcsWorkspaceSearchError");
+      expect((yield* entries.list({ cwd }).pipe(Effect.flip))._tag).toBe("VcsWorkspaceSearchError");
+    }),
+  );
   describe("list", () => {
     it.effect("classifies Arc children through the native driver", () =>
       Effect.gen(function* () {
@@ -158,6 +235,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
       }).pipe(
         Effect.provide(
           Layer.mock(VcsDriver.VcsDriver)({
+            workspaceSearch: null,
             checkpoints: {
               captureCheckpoint: () => Effect.die("unexpected checkpoint capture"),
               hasCheckpointRef: () => Effect.die("unexpected checkpoint lookup"),

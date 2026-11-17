@@ -1,7 +1,7 @@
 import type { PullRequestCheck, PullRequestDetail } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolvePullRequestDetailChecks } from "./pullRequestChecks.ts";
+import { blockingPullRequestChecks, resolvePullRequestDetailChecks } from "./pullRequestChecks.ts";
 
 const detail = (overrides: Partial<PullRequestDetail> = {}): PullRequestDetail =>
   ({ title: "Cache the title", state: "open", checks: [], ...overrides }) as PullRequestDetail;
@@ -50,6 +50,11 @@ describe("resolvePullRequestDetailChecks", () => {
     ).toEqual(checks.checks);
     const refreshed = detail({ observedAt: 3_000, checks: [pending] });
     expect(resolvePullRequestDetailChecks(refreshed, checks, true)).toBe(refreshed);
+    // A newer detail without links keeps the ones the checks read found.
+    const linked = { ...checks, checks: [{ ...pending, url: "https://ci/build" }] };
+    expect(resolvePullRequestDetailChecks(refreshed, linked, true)?.checks).toEqual([
+      { ...pending, url: "https://ci/build" },
+    ]);
   });
 
   it("keeps merged details settled while applying newer checks", () => {
@@ -58,5 +63,21 @@ describe("resolvePullRequestDetailChecks", () => {
     expect(
       resolvePullRequestDetailChecks(merged, { state: "open", observedAt: 2_000, checks }, true),
     ).toEqual({ ...merged, checks });
+  });
+});
+
+describe("blockingPullRequestChecks", () => {
+  it("waits on the required checks where the host marks any, otherwise on all", () => {
+    const check = (name: string, required?: boolean): PullRequestCheck => ({
+      name,
+      status: "pending",
+      url: null,
+      description: null,
+      ...(required === undefined ? {} : { required }),
+    });
+    const build = check("build", true);
+    expect(blockingPullRequestChecks([build, check("lint", false)])).toEqual([build]);
+    const advisory = [check("lint", false), check("docs")];
+    expect(blockingPullRequestChecks(advisory)).toEqual(advisory);
   });
 });

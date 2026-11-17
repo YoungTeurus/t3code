@@ -1121,6 +1121,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect(
+    "restores legacy Arcanum host tokens from the secret store and redacts them for clients",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        yield* secrets.set(
+          sourceControlHostSecretName({
+            kind: "arcanum",
+            field: "tokens",
+            serverHost: "a.yandex-team.ru",
+          }),
+          new TextEncoder().encode("arcanum-saved-fixture"),
+        );
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            sourceControlHosts: { arcanum: { tokens: { "a.yandex-team.ru": SECRET_REDACTED } } },
+          }),
+        );
+        const settings = yield* service.getSettings;
+        assert.deepEqual(settings.sourceControlHosts.arcanum?.tokens, {
+          "a.yandex-team.ru": "arcanum-saved-fixture",
+        });
+        assert.deepEqual(
+          ServerSettingsModule.redactServerSettingsForClient(settings, { secretReferences: true })
+            .sourceControlHosts.arcanum?.tokens,
+          { "a.yandex-team.ru": SECRET_REDACTED },
+        );
+        assert.notInclude(yield* fs.readFileString(config.settingsPath), "arcanum-saved-fixture");
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
   it.effect("reads settings secrets once per settings change", () => {
     let reads = 0;
     const layerSecret = Layer.effect(

@@ -10,6 +10,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as RcMap from "effect/RcMap";
+import * as Ref from "effect/Ref";
+import * as Deferred from "effect/Deferred";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
@@ -41,6 +43,10 @@ import {
 } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
+import {
+  type CodexConfigRequirements,
+  codexSupportedRuntimeModes,
+} from "./codexManagedRequirements.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -167,6 +173,10 @@ export interface CodexAppServerProviderSnapshot {
   /** Undefined when `config/read` failed, so T3 cannot know Codex's default program. */
   readonly daybreakEnabled?: boolean | undefined;
   readonly cyberAccessProgramsUnavailable?: boolean | undefined;
+  /** config.toml's `sandbox_workspace_write.network_access`; absent when unset or unread. */
+  readonly workspaceWriteNetworkAccess?: boolean | undefined;
+  /** Null when Codex reports none; absent when the read failed. */
+  readonly requirements?: CodexConfigRequirements | null | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
   readonly pluginCatalog?: ServerProviderPluginCatalog;
 }
@@ -771,7 +781,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + input.probeTimeoutMs - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, { config, nativeUsage, rateLimits }, pluginCatalog] =
+  const [skillsResponse, models, { config, nativeUsage, rateLimits }, pluginCatalog, requirements] =
     yield* Effect.all(
       [
         withCodexDiscoveryDeadline(
@@ -817,6 +827,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
           readCodexPluginCatalog(client.request("plugin/installed", { cwds: [] })),
           deadlineMs,
         ),
+        withCodexDiscoveryDeadline(
+          client.request("configRequirements/read", undefined),
+          deadlineMs,
+          CODEX_CONFIG_PROBE_TIMEOUT_MS,
+        ).pipe(
+          Effect.map((response) =>
+            response === undefined ? undefined : (response.requirements ?? null),
+          ),
+          Effect.catch(() =>
+            Effect.logDebug("Codex requirements read failed.").pipe(Effect.as(undefined)),
+          ),
+        ),
       ],
       { concurrency: "unbounded" },
     );
@@ -830,15 +852,46 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     version,
     models,
     serviceTier: config?.service_tier ?? undefined,
+    ...(config?.sandbox_workspace_write?.network_access == null
+      ? {}
+      : { workspaceWriteNetworkAccess: config.sandbox_workspace_write.network_access }),
     daybreakEnabled: config === undefined ? undefined : cyberAccess?.daybreak === true,
     // An unread config cannot rule out an API key with the programs turned off.
     cyberAccessProgramsUnavailable:
       accountResponse.account?.type === "apiKey" &&
       (config === undefined || cyberAccess?.features?.api_key_cyber_access_programs === false),
+    ...(requirements === undefined ? {} : { requirements }),
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
     ...(pluginCatalog === undefined ? {} : { pluginCatalog }),
   } satisfies CodexAppServerProviderSnapshot;
 });
+
+/**
+ * A provider probe that keeps config.toml's workspace-write network access for sessions:
+ * a turn's explicit sandbox policy replaces it, while sessions cannot read config without
+ * an extra request. Reads wait for the first probe, at most as long as a probe may run.
+ */
+export const makeCodexWorkspaceWriteNetworkProbe = Effect.fn("makeCodexWorkspaceWriteNetworkProbe")(
+  function* (
+    probe: NonNullable<
+      Parameters<typeof checkCodexProviderStatus>[1]
+    > = probeCodexAppServerProvider,
+  ) {
+    const networkAccess = yield* Ref.make<boolean | undefined>(undefined);
+    const firstProbe = yield* Deferred.make<void>();
+    return {
+      probe: (input: Parameters<typeof probe>[0]) =>
+        probe(input).pipe(
+          Effect.tap((snapshot) => Ref.set(networkAccess, snapshot.workspaceWriteNetworkAccess)),
+          Effect.ensuring(Deferred.succeed(firstProbe, undefined)),
+        ),
+      networkAccess: Deferred.await(firstProbe).pipe(
+        Effect.timeoutOption(Duration.millis(CODEX_AUTH_PROBE_TIMEOUT_MS)),
+        Effect.andThen(Ref.get(networkAccess)),
+      ),
+    };
+  },
+);
 
 // Old CLIs can exit before initialize reports the version needed for compatibility advice.
 const probeCodexCliVersion = Effect.fn("probeCodexCliVersion")(
@@ -1152,6 +1205,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
   }
 
   const snapshot = probeResult.success.value;
+  const supportedRuntimeModes = codexSupportedRuntimeModes(snapshot.requirements);
   const accountStatus = managedAuth
     ? { status: "ready" as const, auth: managedAuth, message: undefined }
     : accountProbeStatus(
@@ -1179,7 +1233,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
           });
 
   return buildServerProvider({
-    presentation: CODEX_PRESENTATION,
+    presentation:
+      supportedRuntimeModes === undefined
+        ? CODEX_PRESENTATION
+        : { ...CODEX_PRESENTATION, supportedRuntimeModes },
     enabled: codexSettings.enabled,
     checkedAt,
     models: pipe(

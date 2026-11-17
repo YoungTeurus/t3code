@@ -20,6 +20,8 @@ import {
   buildAskAboutPullRequestHandoff,
   buildExplainPullRequestHandoff,
   buildResolveConflictsPrompt,
+  classifyPullRequestChecks,
+  groupPullRequestChecks,
   resolveThreadPanelPullRequestAction,
   buildPullRequestCommentContext,
   buildFixFindingHandoff,
@@ -55,6 +57,7 @@ import {
   readableFailure,
 } from "./pullRequestDetail.logic";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
+import { pullRequestChecksState } from "./pullRequestPresentation";
 
 describe("pull request checkout commands", () => {
   it("quotes shell metacharacters in Forgejo repository URLs", () => {
@@ -202,6 +205,36 @@ describe("pull request primary control", () => {
         autoMergeEnabled: undefined,
       }),
     ).toBe("merge");
+  });
+});
+
+describe("pull request checks", () => {
+  it("leaves checks merging does not wait on out of the rollup and folds them away", () => {
+    const check = (name: string, status: PullRequestCheck["status"], required: boolean) => ({
+      name,
+      status,
+      url: null,
+      description: null,
+      required,
+    });
+    const build = check("build", "success", true);
+    const lint = check("lint", "failure", false);
+    const docs = check("docs", "pending", false);
+    expect(classifyPullRequestChecks([build, lint, docs])).toBe("passing");
+    expect(pullRequestChecksState([build, lint, docs])).toBe("passing");
+    expect(groupPullRequestChecks([build, lint, docs])).toEqual({
+      attention: [],
+      running: [],
+      completed: [build, lint, docs],
+    });
+    const tests = check("tests", "pending", true);
+    expect(classifyPullRequestChecks([build, tests, lint])).toBe("pending");
+    expect(pullRequestChecksState([build, tests, lint])).toBe("pending");
+    // A finished required set passes whatever optional checks still do.
+    const skipped = check("build", "skipped", true);
+    expect(pullRequestChecksState([skipped, check("lint", "pending", false)])).toBe("passing");
+    expect(pullRequestChecksState([skipped, check("lint", "success", false)])).toBe("passing");
+    expect(groupPullRequestChecks([build, tests, lint]).running).toEqual([tests]);
   });
 });
 

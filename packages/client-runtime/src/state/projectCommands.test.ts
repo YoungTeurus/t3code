@@ -63,6 +63,12 @@ const makeHarness = Effect.fn("TestProjectCommands.makeHarness")(function* () {
       Option.some({
         client: {
           [WS_METHODS.projectsEnsureScratch]: () => Effect.succeed({ projectId: PROJECT_ID }),
+          [WS_METHODS.projectsSearchEntries]: (input: { cwd: string }) =>
+            Effect.succeed({
+              entries: [{ path: "foo", kind: "file" as const }],
+              truncated: false,
+              ...(input.cwd === "/indexed" ? { source: { index: "repo/main" } } : {}),
+            }),
           [WS_METHODS.projectsReadFile]: () =>
             Effect.gen(function* () {
               const byteLength = file.byteLength;
@@ -360,6 +366,30 @@ describe("writeFile metadata", () => {
         "/repo/./foo",
       ]);
     }),
+  );
+});
+
+describe("searchEntries metadata", () => {
+  it.effect("seeds kinds from a local search but not from a server index's", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      for (const cwd of ["/local", "/indexed"]) {
+        yield* AtomRegistry.getResult(
+          h.registry,
+          h.commands.searchEntries({
+            environmentId: ENVIRONMENT_ID,
+            input: { cwd, query: "foo", limit: 10 },
+          }),
+          { suspendOnWaiting: true },
+        );
+        yield* AtomRegistry.getResult(
+          h.registry,
+          h.commands.fileMetadata({ environmentId: ENVIRONMENT_ID, input: { path: `${cwd}/foo` } }),
+          { suspendOnWaiting: true },
+        );
+      }
+      expect(h.metadataRequests).toEqual([["/indexed/foo"]]);
+    }).pipe(Effect.scoped),
   );
 });
 

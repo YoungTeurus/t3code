@@ -211,6 +211,9 @@ import {
   PullRequestLabelChangeInput,
   PullRequestSetFilesViewedInput,
   PullRequestSubmitReviewInput,
+  PullRequestReviewActionInput,
+  PullRequestCheckActionInput,
+  PullRequestReviewEvents,
   PullRequestThreadCommentsInput,
   PullRequestThreadCommentsResult,
   PullRequestThreadReplyInput,
@@ -578,6 +581,7 @@ export const WS_METHODS = {
   pullRequestsPreview: "pullRequests.preview",
   pullRequestsChecks: "pullRequests.checks",
   pullRequestsActivity: "pullRequests.activity",
+  pullRequestsReviewEvents: "pullRequests.reviewEvents",
   pullRequestsReviewGuide: "pullRequests.reviewGuide",
   pullRequestsGenerateReviewGuide: "pullRequests.generateReviewGuide",
   pullRequestsThreadComments: "pullRequests.threadComments",
@@ -590,6 +594,8 @@ export const WS_METHODS = {
   pullRequestsComment: "pullRequests.comment",
   pullRequestsUpdateComment: "pullRequests.updateComment",
   pullRequestsSubmitReview: "pullRequests.submitReview",
+  pullRequestsRunReviewAction: "pullRequests.runReviewAction",
+  pullRequestsRunCheckAction: "pullRequests.runCheckAction",
   pullRequestsReplyToThread: "pullRequests.replyToThread",
   pullRequestsSetThreadResolution: "pullRequests.setThreadResolution",
   pullRequestsSetReaction: "pullRequests.setReaction",
@@ -1137,6 +1143,12 @@ const WsPullRequestsActivityRpc = Rpc.make(WS_METHODS.pullRequestsActivity, {
   error: PullRequestRpcError,
 });
 
+const WsPullRequestsReviewEventsRpc = Rpc.make(WS_METHODS.pullRequestsReviewEvents, {
+  payload: PullRequestRef,
+  success: PullRequestReviewEvents,
+  error: PullRequestRpcError,
+});
+
 const WsPullRequestsReviewGuideRpc = Rpc.make(WS_METHODS.pullRequestsReviewGuide, {
   payload: PullRequestRef,
   success: PullRequestReviewGuideResult,
@@ -1206,6 +1218,18 @@ const WsPullRequestsUpdateCommentRpc = Rpc.make(WS_METHODS.pullRequestsUpdateCom
 
 const WsPullRequestsSubmitReviewRpc = Rpc.make(WS_METHODS.pullRequestsSubmitReview, {
   payload: PullRequestSubmitReviewInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+const WsPullRequestsRunReviewActionRpc = Rpc.make(WS_METHODS.pullRequestsRunReviewAction, {
+  payload: PullRequestReviewActionInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+const WsPullRequestsRunCheckActionRpc = Rpc.make(WS_METHODS.pullRequestsRunCheckAction, {
+  payload: PullRequestCheckActionInput,
   success: Schema.Void,
   error: PullRequestRpcError,
 });
@@ -2196,6 +2220,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsPreviewRpc,
   WsPullRequestsChecksRpc,
   WsPullRequestsActivityRpc,
+  WsPullRequestsReviewEventsRpc,
   WsPullRequestsReviewGuideRpc,
   WsPullRequestsGenerateReviewGuideRpc,
   WsPullRequestsThreadCommentsRpc,
@@ -2208,6 +2233,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsCommentRpc,
   WsPullRequestsUpdateCommentRpc,
   WsPullRequestsSubmitReviewRpc,
+  WsPullRequestsRunReviewActionRpc,
+  WsPullRequestsRunCheckActionRpc,
   WsPullRequestsReplyToThreadRpc,
   WsPullRequestsSetThreadResolutionRpc,
   WsPullRequestsSetReactionRpc,

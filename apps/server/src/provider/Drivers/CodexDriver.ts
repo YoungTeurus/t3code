@@ -28,6 +28,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkCodexProviderStatus,
+  makeCodexWorkspaceWriteNetworkProbe,
   makePendingCodexProvider,
   makeCodexSkillsProbe,
   withCodexAppServerClient,
@@ -238,6 +239,7 @@ export const CodexDriver: ProviderDriver<
         Effect.map((capabilities) => withCodexNativeLatestVersion(capabilities, httpClient)),
       );
 
+    const networkProbe = yield* makeCodexWorkspaceWriteNetworkProbe();
     const orchestrationAdapter = yield* createCodexAdapterV2(
       {
         instanceId,
@@ -253,6 +255,7 @@ export const CodexDriver: ProviderDriver<
           Effect.map((value) => value.models),
         ),
         compatibility: installation.compatibility,
+        workspaceWriteNetworkAccess: networkProbe.networkAccess,
       },
     ).pipe(
       Effect.mapError(
@@ -271,7 +274,7 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+          checkCodexProviderStatus(effectiveConfig, networkProbe.probe, processEnv),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },

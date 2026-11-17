@@ -110,6 +110,8 @@ export function FileTreeBrowser(props: {
   readonly searchQuery: string;
   readonly searchResultPaths: ReadonlySet<string> | null;
   readonly searchTruncated: boolean;
+  /** Where search results come from, when that is not the checkout itself. */
+  readonly searchNote?: string | null;
   readonly selectedPath: string | null;
   readonly loadingDirectories: ReadonlySet<string>;
   readonly onLoadDirectory: (path: string, retry?: boolean) => void;
@@ -241,6 +243,9 @@ export function FileTreeBrowser(props: {
             <Text accessibilityRole="alert" className="mx-4 my-2 text-xs text-foreground-muted">
               {props.error}
             </Text>
+          ) : null}
+          {props.searchNote ? (
+            <Text className="mx-4 my-2 text-xs text-foreground-muted">{props.searchNote}</Text>
           ) : null}
           {props.searchTruncated ? (
             <Text className="mx-4 my-2 text-xs text-foreground-muted">

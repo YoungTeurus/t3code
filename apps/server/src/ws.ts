@@ -641,6 +641,12 @@ function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesEr
         normalizedCwd: error.cwd,
         detail: error.reason,
       };
+    case "VcsWorkspaceSearchError":
+      return {
+        failure: "search_service_failed",
+        normalizedCwd: error.cwd,
+        detail: error.reason,
+      };
     default:
       return unexpectedCompatibilityError(error);
   }
@@ -2773,6 +2779,8 @@ export const layerWsRpc = (
           withPullRequestViewer(input, pullRequests.checks(input)),
         [WS_METHODS.pullRequestsActivity]: (input) =>
           withPullRequestViewer(input, openedPullRequestRead(pullRequests.activity(input))),
+        [WS_METHODS.pullRequestsReviewEvents]: (input) =>
+          withPullRequestViewer(input, pullRequests.reviewEvents(input)),
         [WS_METHODS.pullRequestsReviewGuide]: (input) =>
           withPullRequestViewer(input, reviewGuides.get(input)),
         [WS_METHODS.pullRequestsGenerateReviewGuide]: (input) =>
@@ -2805,6 +2813,10 @@ export const layerWsRpc = (
           withPullRequestViewer(input, pullRequests.updateComment(input)),
         [WS_METHODS.pullRequestsSubmitReview]: (input) =>
           withPullRequestViewer(input, pullRequests.submitReview(input)),
+        [WS_METHODS.pullRequestsRunReviewAction]: (input) =>
+          withPullRequestViewer(input, pullRequests.runReviewAction(input)),
+        [WS_METHODS.pullRequestsRunCheckAction]: (input) =>
+          withPullRequestViewer(input, pullRequests.runCheckAction(input)),
         [WS_METHODS.pullRequestsReplyToThread]: (input) =>
           withPullRequestViewer(input, pullRequests.replyToThread(input)),
         [WS_METHODS.pullRequestsSetThreadResolution]: (input) =>
@@ -3670,6 +3682,7 @@ export const layer = Layer.unwrap(
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(
+                    // VCS routing comes from the server, sharing its Git driver.
                     SourceControlProviderRegistry.layer.pipe(
                       Layer.provide(SourceControlBuiltInDrivers.layer),
                       Layer.provideMerge(GitVcsDriver.layer),

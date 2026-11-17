@@ -50,6 +50,10 @@ describe("Arc workspaces", () => {
       yield* fs.makeDirectory(path.join(workspace, ".arc"));
       yield* fs.writeFileString(path.join(workspace, ".arc", "HEAD"), "fixture");
       let registered = false;
+      let dirty = false;
+      let stashed = false;
+      let otherBranch = false;
+      let actualHead = "a".repeat(40);
       let leaseOwner: string | null = null;
       let actualBranch = "task-1";
       let mounted = true;
@@ -57,6 +61,27 @@ describe("Arc workspaces", () => {
       const processLayer = Layer.mock(VcsProcess.VcsProcess)({
         run: (input) =>
           Effect.gen(function* () {
+            if (input.command === "arc") {
+              const value =
+                input.args[0] === "status"
+                  ? { status: dirty ? { untracked: [{}] } : {} }
+                  : input.args[0] === "stash"
+                    ? stashed
+                      ? [{}]
+                      : []
+                    : [
+                        { name: actualBranch },
+                        { name: "trunk" },
+                        ...(otherBranch ? [{ name: "unpublished-work" }] : []),
+                      ];
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: JSON.stringify(value),
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }
             assert.equal(input.command, "ya");
             const command = input.args[2];
             if (command === "remount") {
@@ -126,7 +151,7 @@ describe("Arc workspaces", () => {
                 cwd,
                 scope: "service",
                 repository: "arcadia",
-                head: "a".repeat(40),
+                head: actualHead,
                 branch: cwd.startsWith(workspace) ? actualBranch : "trunk",
                 upstream: null,
                 identity: cwd.startsWith(workspace) ? "task" : "source",
@@ -173,6 +198,52 @@ describe("Arc workspaces", () => {
             .pipe(Effect.result))._tag,
           "Failure",
         );
+        const cleanup = {
+          path: first.cwd,
+          branch: actualBranch,
+          keepWhen: "any-local-files" as const,
+        };
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Candidate");
+        dirty = true;
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Keep");
+        dirty = false;
+        stashed = true;
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Keep");
+        stashed = false;
+        otherBranch = true;
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Keep");
+        otherBranch = false;
+        actualHead = "b".repeat(40);
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Keep");
+        actualHead = "a".repeat(40);
+        assert.equal(
+          yield* provider.managedWorktrees!.remove({
+            ...cleanup,
+            head: actualHead,
+            guard: Effect.succeed("another thread started"),
+          }),
+          "another thread started",
+        );
+        assert.isTrue(registered);
+        const state = yield* ServerConfig.ServerConfig;
+        const registrationDirectory = path.join(state.stateDir, "arc-workspaces");
+        const file = path.join(
+          registrationDirectory,
+          (yield* fs.readDirectory(registrationDirectory))[0]!,
+        );
+        const record = JSON.parse(yield* fs.readFileString(file));
+        yield* fs.writeFileString(file, JSON.stringify({ ...record, createdByT3: false }));
+        assert.equal((yield* provider.managedWorktrees!.inspect(cleanup))._tag, "Keep");
+        yield* fs.writeFileString(file, JSON.stringify(record));
+        assert.isNull(
+          yield* provider.managedWorktrees!.remove({
+            ...cleanup,
+            head: actualHead,
+            guard: Effect.succeed(null),
+          }),
+        );
+        assert.isFalse(registered);
+        yield* provider.ensure({ ...input, branch: actualBranch });
         assert.isTrue(registered);
         yield* provider.remove({ cwd: input.cwd, path: workspace, explicit: true });
         assert.isFalse(registered);

@@ -27,6 +27,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useEnvironmentQuery } from "../../state/query";
 import { PullRequestMarkdown, PullRequestMarkdownRepository } from "./PullRequestMarkdown";
 import { PullRequestAvatar } from "./PullRequestPresentation";
+import { PullRequestIssueActions } from "./PullRequestIssueControls";
 import { PullRequestCommentFooter } from "./PullRequestReactions";
 import { pullRequestTarget, type PullRequestParams } from "./usePullRequestDiff";
 import { usePullRequestPermissions } from "./usePullRequestPermissions";
@@ -174,7 +175,7 @@ function Discussion({ params }: { params: PullRequestParams & { readonly discuss
           subtitle={`#${params.number}`}
           onBack={() => navigation.goBack()}
           actions={
-            permissions.canResolve && thread
+            permissions.canResolve && thread && thread.issueState === undefined
               ? [
                   {
                     accessibilityLabel: resolveLabel,
@@ -212,9 +213,22 @@ function Discussion({ params }: { params: PullRequestParams & { readonly discuss
                   </Text>
                 )}
                 <Text className="text-xs text-foreground-muted">
-                  {thread.isResolved ? "Resolved" : "Unresolved"}
+                  {thread.issueState === "dropped"
+                    ? "Dropped"
+                    : thread.isResolved
+                      ? "Resolved"
+                      : "Unresolved"}
                   {thread.isOutdated ? " · Outdated" : ""}
                 </Text>
+                {thread.issueState === undefined ? null : (
+                  <PullRequestIssueActions
+                    params={params}
+                    threadId={thread.id}
+                    state={thread.issueState}
+                    canResolve={permissions.canResolve && thread.canResolve !== false}
+                    onChanged={refresh}
+                  />
+                )}
                 {filePath === null ? null : (
                   <Button
                     label="View file diff"

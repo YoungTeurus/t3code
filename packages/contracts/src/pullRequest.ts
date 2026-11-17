@@ -99,7 +99,9 @@ export const PullRequestLabel = Schema.Struct({
 });
 export type PullRequestLabel = typeof PullRequestLabel.Type;
 
+/** `queued` has not started yet, `pending` is running. */
 export const PullRequestCheckStatus = Schema.Literals([
+  "queued",
   "pending",
   "action-required",
   "success",
@@ -109,6 +111,18 @@ export const PullRequestCheckStatus = Schema.Literals([
   "cancelled",
 ]);
 export type PullRequestCheckStatus = typeof PullRequestCheckStatus.Type;
+
+/** Something a host lets the viewer do to a check or to the checks as a whole. */
+export const PullRequestCheckAction = Schema.Struct({
+  /** The host's own name for it, sent back to run it. */
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  available: Schema.Boolean,
+  unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  /** Absent asks for no reason; `required` refuses an empty one. */
+  reason: Schema.optional(Schema.Literals(["optional", "required"])),
+});
+export type PullRequestCheckAction = typeof PullRequestCheckAction.Type;
 
 export const PullRequestCheck = Schema.Struct({
   name: TrimmedNonEmptyString,
@@ -121,6 +135,8 @@ export const PullRequestCheck = Schema.Struct({
    * approval when that read fails, so nothing waits on it or counts it as passing.
    */
   placeholder: Schema.optional(Schema.Boolean),
+  /** Unavailable ones included, so the viewer sees why. */
+  actions: Schema.optional(ForwardCompatibleArray(PullRequestCheckAction)),
 });
 export type PullRequestCheck = typeof PullRequestCheck.Type;
 
@@ -145,6 +161,48 @@ export const PullRequestReaction = Schema.Struct({
 });
 export type PullRequestReaction = typeof PullRequestReaction.Type;
 
+/** A comment raised as an issue stays open until it is resolved or dropped. */
+export const PullRequestIssueState = Schema.Literals(["open", "resolved", "dropped"]);
+export type PullRequestIssueState = typeof PullRequestIssueState.Type;
+
+/** A review decision a host offers beyond the verdicts, such as withdrawing one's own. */
+export const PullRequestReviewAction = Schema.Struct({
+  /** The host's own name for it, sent back to run it. */
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  available: Schema.Boolean,
+  unavailableReason: Schema.optional(TrimmedNonEmptyString),
+});
+export type PullRequestReviewAction = typeof PullRequestReviewAction.Type;
+
+export const PullRequestReviewerState = Schema.Literals([
+  "pending",
+  "commented",
+  "approved",
+  "changes-requested",
+  "blocked",
+]);
+export type PullRequestReviewerState = typeof PullRequestReviewerState.Type;
+
+export const PullRequestReviewerStatus = Schema.Struct({
+  actor: PullRequestActor,
+  state: PullRequestReviewerState,
+  /** The host's own name for the decision, where it has several kinds of one state. */
+  label: Schema.optional(TrimmedNonEmptyString),
+});
+export type PullRequestReviewerStatus = typeof PullRequestReviewerStatus.Type;
+
+/** Where review stands as the host counts it, from a host that reports more than a decision. */
+export const PullRequestReviewStatus = Schema.Struct({
+  reviewers: ForwardCompatibleArray(PullRequestReviewerStatus),
+  completionPercent: Schema.optional(
+    Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  ),
+  /** Unavailable ones included, so the viewer sees why. */
+  actions: ForwardCompatibleArray(PullRequestReviewAction),
+});
+export type PullRequestReviewStatus = typeof PullRequestReviewStatus.Type;
+
 export const PullRequestCommentKind = Schema.Literals([
   "issue-comment",
   "review-comment",
@@ -163,7 +221,14 @@ export const PullRequestComment = Schema.Struct({
   path: Schema.NullOr(Schema.String),
   reviewState: Schema.NullOr(Schema.String),
   reactions: Schema.optional(Schema.Array(PullRequestReaction)),
+  /** False on an item the host takes no reaction on, despite `capabilities.reactions`. */
+  canReact: Schema.optional(Schema.Boolean),
   canEdit: Schema.optional(Schema.Boolean),
+  /** For a host whose conversation comments thread: the id of the one that started the thread. */
+  threadId: Schema.optional(TrimmedNonEmptyString),
+  /** On the comment that raised an issue in the conversation. */
+  issueState: Schema.optional(PullRequestIssueState),
+  canResolve: Schema.optional(Schema.Boolean),
 });
 export type PullRequestComment = typeof PullRequestComment.Type;
 
@@ -199,6 +264,8 @@ export const PullRequestReviewThread = Schema.Struct({
   nextCommentsCursor: Schema.optional(TrimmedNonEmptyString),
   /** Can only narrow repository-wide resolve permission. Absent when unreported. */
   canResolve: Schema.optional(Schema.Boolean),
+  /** From a host with issues, on a thread raised as one. `isResolved` stays in step. */
+  issueState: Schema.optional(PullRequestIssueState),
 });
 export type PullRequestReviewThread = typeof PullRequestReviewThread.Type;
 
@@ -262,6 +329,8 @@ export const PullRequestReviewCapabilities = Schema.Struct({
   reply: Schema.Boolean,
   resolve: Schema.Boolean,
   verdicts: ForwardCompatibleArray(PullRequestReviewVerdict),
+  /** Comments can be raised as issues, which are resolved or dropped and can reopen. */
+  issues: Schema.optional(Schema.Boolean),
 });
 export type PullRequestReviewCapabilities = typeof PullRequestReviewCapabilities.Type;
 
@@ -321,6 +390,8 @@ export const PullRequestCapabilities = Schema.Struct({
   checksAlwaysReport: Schema.optional(Schema.Boolean),
   /** The diff can read one file the paged diff withheld as too large (`PullRequestDiffInput.path`). */
   withheldFileDiff: Schema.optional(Schema.Boolean),
+  /** Review decisions come from `pullRequests.reviewEvents`, read only for the timeline. */
+  reviewEvents: Schema.optional(Schema.Boolean),
 });
 export type PullRequestCapabilities = typeof PullRequestCapabilities.Type;
 
@@ -682,6 +753,9 @@ export const PullRequestDetail = Schema.Struct({
   /** Absent where the host has no merge queue or does not report one. */
   mergeQueueRemoval: Schema.optional(PullRequestMergeQueueRemoval),
   maintainerCanModify: Schema.optional(Schema.Boolean),
+  reviewStatus: Schema.optional(PullRequestReviewStatus),
+  /** Actions on the checks as a whole, such as no longer waiting for a service to add its own. */
+  checkActions: Schema.optional(ForwardCompatibleArray(PullRequestCheckAction)),
 });
 export type PullRequestDetail = typeof PullRequestDetail.Type;
 
@@ -713,6 +787,12 @@ export const pullRequestConversationThreads = (
   activity.overviewThreads === undefined || activity.overviewThreads.length === 0
     ? activity.reviewThreads
     : [...activity.reviewThreads, ...activity.overviewThreads];
+
+/** Review decisions as `review` comments without a body, for a host that reports them apart. */
+export const PullRequestReviewEvents = Schema.Struct({
+  events: Schema.Array(PullRequestComment),
+});
+export type PullRequestReviewEvents = typeof PullRequestReviewEvents.Type;
 
 export const PullRequestDetailView = Schema.Struct({
   ...PullRequestDetail.fields,
@@ -849,6 +929,8 @@ const CommentBody = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxL
 export const PullRequestCommentInput = Schema.Struct({
   ...PullRequestRef.fields,
   body: CommentBody,
+  /** Only to a host whose capabilities include `review.issues`. */
+  isIssue: Schema.optional(Schema.Boolean),
 });
 export type PullRequestCommentInput = typeof PullRequestCommentInput.Type;
 
@@ -900,6 +982,8 @@ export const PullRequestReviewCommentDraft = Schema.Struct({
    */
   startPosition: Schema.optional(PullRequestReviewPosition),
   body: CommentBody,
+  /** Only to a host whose capabilities include `review.issues`. */
+  isIssue: Schema.optional(Schema.Boolean),
 });
 export type PullRequestReviewCommentDraft = typeof PullRequestReviewCommentDraft.Type;
 
@@ -938,6 +1022,11 @@ export const PullRequestThreadResolutionInput = Schema.Struct({
   ...PullRequestRef.fields,
   threadId: TrimmedNonEmptyString,
   resolved: Schema.Boolean,
+  /**
+   * Which closed state, for a host with `review.issues`. Agrees with `resolved`: only `open`
+   * is unresolved.
+   */
+  issueState: Schema.optional(PullRequestIssueState),
 });
 export type PullRequestThreadResolutionInput = typeof PullRequestThreadResolutionInput.Type;
 
@@ -970,6 +1059,25 @@ export const PullRequestLabelChangeInput = Schema.Struct({
   applied: Schema.Boolean,
 });
 export type PullRequestLabelChangeInput = typeof PullRequestLabelChangeInput.Type;
+
+/** Runs one of the detail's `reviewStatus.actions`. */
+export const PullRequestReviewActionInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  actionId: TrimmedNonEmptyString,
+  /** The head the viewer saw. A host refuses the action once the pull request has moved on. */
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyString),
+});
+export type PullRequestReviewActionInput = typeof PullRequestReviewActionInput.Type;
+
+/** Runs one of the detail's check actions, on a check or on the checks as a whole. */
+export const PullRequestCheckActionInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  actionId: TrimmedNonEmptyString,
+  reason: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1000))),
+  /** The head the viewer saw. A host refuses the action once the pull request has moved on. */
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyString),
+});
+export type PullRequestCheckActionInput = typeof PullRequestCheckActionInput.Type;
 
 /**
  * The names keep their `cli-` prefix for wire compatibility; for a host read with a credential

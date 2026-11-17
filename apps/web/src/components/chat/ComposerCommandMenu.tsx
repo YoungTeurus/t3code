@@ -116,6 +116,8 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   triggerKind: ComposerTriggerKind | null;
   emptyStateText?: string;
   notice?: string | undefined;
+  /** Where the results come from, when that is not the checkout itself. */
+  note?: string | null;
   activeItemId: string | null;
   onHighlightedItemChange: (itemId: string | null) => void;
   onSelect: (item: ComposerCommandItem) => void;
@@ -202,6 +204,9 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
             </p>
           </div>
         )}
+        {props.note && !props.isLoading ? (
+          <p className="text-secondary-label px-5 pb-2 text-xs">{props.note}</p>
+        ) : null}
       </ComposerBanner.Surface>
     </Command>
   );

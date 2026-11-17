@@ -29,6 +29,7 @@ import {
   setComposerDraftContext,
   useComposerDraftSelection,
 } from "../../state/use-composer-drafts";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   detectComposerTrigger,
@@ -667,6 +668,7 @@ export function useComposerCommandMenu({
     skills,
     isLoading:
       trigger?.kind === "pull-request" ? pullRequestSearch.isPending : pathSearch.isPending,
+    note: trigger?.kind === "path" ? (describeSearchSource(pathSearch.source)?.note ?? null) : null,
     error:
       trigger?.kind === "pull-request"
         ? pullRequestProjectId === null || pullRequestRepository === null

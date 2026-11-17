@@ -27,6 +27,7 @@ import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PullRequestEditButton } from "./PullRequestEditButton";
 import { isCommentSubmitShortcut } from "../diffs/commentSubmitShortcut";
+import { PullRequestIssueActions } from "./PullRequestIssueControls";
 import {
   editPullRequestThreadComment,
   mergePullRequestThreadComments,
@@ -88,9 +89,11 @@ export function getReviewPositionAnchor(position: PullRequestReviewPosition): {
 export function PendingReviewCommentCard({
   comment,
   onRemove,
+  actions,
 }: {
   comment: PendingReviewComment;
   onRemove: () => void;
+  actions?: ReactNode;
 }) {
   return (
     <div
@@ -101,6 +104,7 @@ export function PendingReviewCommentCard({
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <MessageSquareIcon className="size-3.5" />
         <span>Pending. Sent when you submit the review</span>
+        {actions}
         <Button
           size="icon-xs"
           variant="ghost"
@@ -317,8 +321,8 @@ export function ReviewThreadCard({
           aria-expanded={expanded}
           onClick={() => setExpanded((current) => !current)}
         >
-          {thread.isResolved ? "Resolved" : "Open"} · {commentCount}{" "}
-          {commentCount === 1 ? "comment" : "comments"}
+          {thread.issueState === "dropped" ? "Dropped" : thread.isResolved ? "Resolved" : "Open"} ·{" "}
+          {commentCount} {commentCount === 1 ? "comment" : "comments"}
         </button>
         {thread.isOutdated ? <span>outdated</span> : null}
         {onFix ? (
@@ -344,7 +348,7 @@ export function ReviewThreadCard({
             Add to chat
           </Button>
         ) : null}
-        {canResolve ? (
+        {canResolve && thread.issueState === undefined ? (
           <Button
             size="compact"
             variant="ghost"
@@ -355,6 +359,18 @@ export function ReviewThreadCard({
             {thread.isResolved ? "Unresolve" : "Resolve"}
           </Button>
         ) : null}
+        {thread.issueState === undefined ? null : (
+          <PullRequestIssueActions
+            environmentId={environmentId}
+            reference={reference}
+            threadId={thread.id}
+            state={thread.issueState}
+            canResolve={canResolve}
+            pending={pending}
+            {...(onFix || onAddToChat ? {} : { className: "ml-auto" })}
+            onDone={onReacted}
+          />
+        )}
       </div>
 
       {expanded ? (

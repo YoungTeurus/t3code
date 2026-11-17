@@ -6,6 +6,7 @@ import { PullRequestEntryRow } from "./PullRequestEntryRow";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import IconGitCommit from "@tabler/icons-react-native/IconGitCommit";
+import { nestThreadReplies, reviewStateVerb } from "@t3tools/client-runtime/pull-request-review";
 import {
   pullRequestConversationThreads,
   type PullRequestActivity,
@@ -21,6 +22,7 @@ import { byTimestamp, relativeTime } from "../../lib/time";
 import { PullRequestAvatar } from "./PullRequestPresentation";
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestCommentFooter } from "./PullRequestReactions";
+import { PullRequestCommentIssue } from "./PullRequestIssueControls";
 import { pullRequestDescriptionContent } from "./pullRequestDescriptionContent";
 import { discussionCommentCountLabel } from "./pullRequestDiffComments";
 import { normalizedReviewState } from "./pullRequestStatus";
@@ -77,10 +79,12 @@ function TimelineComment({
   comment,
   params,
   actions,
+  reply = false,
 }: {
   comment: PullRequestComment;
   params: PullRequestParams;
   actions: CommentActions;
+  reply?: boolean;
 }) {
   const target = parsePullRequestAnchor(params.navigationUrl);
   const linked =
@@ -98,7 +102,9 @@ function TimelineComment({
   const changes = state === "CHANGES_REQUESTED";
   return (
     <TimelineEvent
-      icon={approved ? "checkmark" : changes ? "doc.text" : "text.bubble"}
+      icon={
+        reply ? "arrow.turn.left.up" : approved ? "checkmark" : changes ? "doc.text" : "text.bubble"
+      }
       tone={approved ? "success" : changes ? "danger" : undefined}
     >
       <View className="flex-row items-center gap-2">
@@ -107,7 +113,15 @@ function TimelineComment({
           <Text className="text-sm">
             <Text className="font-t3-medium">{comment.author?.login ?? "Unknown author"}</Text>
             <Text className="text-foreground-muted">
-              {approved ? " approved" : changes ? " requested changes" : " commented"}
+              {reply
+                ? " replied"
+                : approved
+                  ? " approved"
+                  : changes
+                    ? " requested changes"
+                    : comment.kind === "review" && comment.body === "" && comment.reviewState
+                      ? ` ${reviewStateVerb(comment.reviewState)}`
+                      : " commented"}
             </Text>
           </Text>
         </View>
@@ -209,6 +223,7 @@ function TimelineComment({
         permissions={actions.permissions}
         onChanged={actions.onChanged}
       />
+      <PullRequestCommentIssue params={params} comment={comment} onChanged={actions.onChanged} />
     </TimelineEvent>
   );
 }
@@ -225,26 +240,39 @@ export function pullRequestTimelineRows(
   const discussionIds = new Set(
     threads.flatMap((thread) => thread.comments.map((comment) => comment.id)),
   );
+  // A pull request-level thread is one row: its root, then its replies.
+  const nested = nestThreadReplies(
+    activity.comments.filter((comment) => !discussionIds.has(comment.id)),
+    (comment) => comment,
+  );
+  const conversations: PullRequestComment[][] = [];
+  for (const comment of nested.items) {
+    if (nested.replies.has(comment)) conversations.at(-1)?.push(comment);
+    else conversations.push([comment]);
+  }
   const events = [
-    ...activity.comments
-      .filter((comment) => !discussionIds.has(comment.id))
-      .map((comment) => ({
-        key: `comment:${comment.id}`,
-        date: comment.createdAt,
-        content: (
-          <TimelineComment
-            key={
-              linkTarget?.kind === "timeline" &&
-              pullRequestAnchorMatchesUrl(linkTarget.anchor, comment.url)
-                ? `${comment.id}:${params.navigationId ?? params.navigationUrl}`
-                : comment.id
-            }
-            comment={comment}
-            params={params}
-            actions={actions}
-          />
-        ),
-      })),
+    ...conversations.map(([root, ...replies]) => ({
+      key: `comment:${root!.id}`,
+      date: root!.createdAt,
+      content: (
+        <>
+          {[root!, ...replies].map((comment, index) => (
+            <TimelineComment
+              key={
+                linkTarget?.kind === "timeline" &&
+                pullRequestAnchorMatchesUrl(linkTarget.anchor, comment.url)
+                  ? `${comment.id}:${params.navigationId ?? params.navigationUrl}`
+                  : comment.id
+              }
+              comment={comment}
+              params={params}
+              actions={actions}
+              reply={index > 0}
+            />
+          ))}
+        </>
+      ),
+    })),
     ...threads.map((thread) => ({
       key: `discussion:${thread.id}`,
       date: thread.comments[0]?.createdAt ?? "",
@@ -287,7 +315,11 @@ export function pullRequestTimelineRows(
               <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-muted" />
             </View>
             <Text className="text-xs text-foreground-muted">
-              {thread.isResolved ? "Resolved" : "Unresolved"}
+              {thread.issueState === "dropped"
+                ? "Dropped"
+                : thread.isResolved
+                  ? "Resolved"
+                  : "Unresolved"}
               {thread.isOutdated ? " · Outdated" : ""} ·{" "}
               {discussionCommentCountLabel(thread.commentCount ?? thread.comments.length)}
             </Text>

@@ -11,6 +11,7 @@ import { projectEnvironment } from "~/state/projects";
 export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
   const [directories, setDirectories] = useState(new Map<string, readonly ProjectEntry[]>());
   const [errors, setErrors] = useState(new Map<string, string>());
+  const [wholeTreeExpansion, setWholeTreeExpansion] = useState(true);
   const [pending, setPending] = useState(1);
   const [loadingDirectories, setLoadingDirectories] = useState<ReadonlySet<string>>(
     () => new Set([""]),
@@ -52,6 +53,8 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
         // A request is dropped from `requests` when its folder disappears, so its read is stale.
         if (!active.current || !result || requests.current.get(directoryPath) !== request) return;
         if (result._tag === "Success") {
+          if (directoryPath === "")
+            setWholeTreeExpansion(result.value.wholeTreeExpansion !== false);
           const children = result.value.entries.filter(
             (entry) =>
               entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))) === directoryPath,
@@ -186,6 +189,8 @@ export function useDirectoryEntries(environmentId: EnvironmentId, cwd: string) {
     isPending: pending > 0,
     loadingDirectories,
     ready: directories.has(""),
+    /** False when the server opens folders one at a time only; nothing may expand them all. */
+    wholeTreeExpansion,
     error: [...errors].find(([path]) => reachableDirectories.has(path))?.[1] ?? null,
   };
 }

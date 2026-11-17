@@ -95,7 +95,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
         cli.run({
           cwd: ctx.root,
           operation: "ArcNativeBackend.fetchUpstream",
-          args: ["fetch", ctx.upstream.replace(/^arcadia\//, "")],
+          args: ["fetch", ctx.upstream.replace(/^(?:arcadia|cloudia)\//, "")],
           timeoutMs: 60_000,
         }),
       );
@@ -104,7 +104,9 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
       [
         ctx.upstream ? log(ctx.root, `${ctx.upstream}..HEAD`) : Effect.succeed([]),
         ctx.upstream ? log(ctx.root, `HEAD..${ctx.upstream}`) : Effect.succeed([]),
-        ctx.branch === "trunk" ? Effect.succeed([]) : log(ctx.root, "arcadia/trunk..HEAD"),
+        ctx.branch === "trunk"
+          ? Effect.succeed([])
+          : log(ctx.root, `${ctx.repository}/trunk..HEAD`),
       ],
       { concurrency: 3 },
     );
@@ -357,7 +359,10 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
         cli.run({
           cwd: input.cwd,
           operation: "ArcNativeBackend.fetchRemote",
-          args: ["fetch", ...(input.refName ? [input.refName.replace(/^arcadia\//, "")] : [])],
+          args: [
+            "fetch",
+            ...(input.refName ? [input.refName.replace(/^(?:arcadia|cloudia)\//, "")] : []),
+          ],
           timeoutMs: 60_000,
         }),
       );
@@ -367,7 +372,8 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     "ArcNativeBackend.resolveRemoteTrackingCommit",
   )(function* (input) {
     if (input.fallbackRemoteName !== "arcadia") return yield* error(input.cwd, "remoteIdentity");
-    const remoteRefName = input.refName === "trunk" ? "arcadia/trunk" : input.refName;
+    const ctx = yield* native(input.cwd, "context", ops.context(input.cwd));
+    const remoteRefName = input.refName === "trunk" ? `${ctx.repository}/trunk` : input.refName;
     return {
       ...(yield* resolveCommit({ cwd: input.cwd, revision: remoteRefName })),
       remoteRefName,
@@ -377,6 +383,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     "ArcNativeBackend.remoteBranchExists",
   )(function* (input) {
     if (input.remoteName !== "arcadia") return false;
+    const ctx = yield* native(input.cwd, "context", ops.context(input.cwd));
     let cursor: number | undefined;
     do {
       const page = yield* native(
@@ -386,7 +393,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
       );
       if (
         page.refs.some(
-          (ref) => ref.name === input.refName || ref.name === `arcadia/${input.refName}`,
+          (ref) => ref.name === input.refName || ref.name === `${ctx.repository}/${input.refName}`,
         )
       )
         return true;
@@ -432,7 +439,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
       native(cwd, "commit", ops.commit(cwd, subject, body, options?.stage)),
     resolvePushTarget: Effect.fn("ArcNativeBackend.resolvePushTarget")(function* (cwd: string) {
       const ctx = yield* native(cwd, "resolvePushTarget", ops.context(cwd));
-      const branch = ctx.upstream?.replace(/^arcadia\//, "") ?? ctx.branch;
+      const branch = ctx.upstream?.replace(/^(?:arcadia|cloudia)\//, "") ?? ctx.branch;
       return branch === null
         ? null
         : { remoteName: "arcadia", branchName: branch, viaPushRemote: false };
@@ -465,7 +472,7 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     resolveWorktreeBaseRemote: (input) =>
       Effect.succeed({
         remoteName: "arcadia",
-        branchName: input.refName.replace(/^arcadia\//, ""),
+        branchName: input.refName.replace(/^(?:arcadia|cloudia)\//, ""),
       }),
     fetchWorktreeBaseCommit: Effect.fn("ArcNativeBackend.fetchWorktreeBaseCommit")(
       function* (input) {

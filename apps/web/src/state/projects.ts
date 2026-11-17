@@ -1,5 +1,8 @@
 import { createEnvironmentProjectAtoms } from "@t3tools/client-runtime/state/projects";
-import { createProjectEnvironmentAtoms } from "@t3tools/client-runtime/state/projects";
+import {
+  createProjectEnvironmentAtoms,
+  PROJECT_SEARCH_SETTLED_CACHE,
+} from "@t3tools/client-runtime/state/projects";
 import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS } from "@t3tools/contracts";
 
@@ -23,7 +26,7 @@ export const projectContentSearch = createEnvironmentRpcQueryAtomFamily(connecti
   label: "environment-data:projects:search-contents",
   tag: WS_METHODS.projectsSearchContents,
   staleTimeMs: 5_000,
-  idleTtlMs: 60_000,
+  settledCache: PROJECT_SEARCH_SETTLED_CACHE,
 });
 
 export const defaultProjectFallbackReadyAtom = Atom.family((projectKey: string | null) =>

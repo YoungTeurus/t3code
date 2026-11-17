@@ -1,5 +1,7 @@
 import type {
   GitCommandError,
+  ReviewDiffFileContentsInput,
+  ReviewDiffFileStat,
   ServerSettings,
   ServerSettingsError,
   ServerSettingsPatch,
@@ -39,6 +41,11 @@ export interface SourceControlProcessInput {
    * The first run of a key fixes its limit.
    */
   readonly concurrency?: { readonly key: string; readonly limit: number };
+  /**
+   * The command changes the Git checkout at `cwd`, as a forge's own checkout command does. The
+   * host refuses it, as it refuses `git`, where another VCS owns `cwd`.
+   */
+  readonly changesGitCheckout?: boolean;
 }
 
 export interface SourceControlProcessOutput {
@@ -55,6 +62,27 @@ export type SourceControlGitOutput = Omit<
   SourceControlProcessOutput,
   "stdoutInvalidUtf8" | "stderrInvalidUtf8"
 >;
+
+/** The change a commit makes against its first parent, as the VCS that owns the folder reads it. */
+export interface SourceControlCommitDiff {
+  /** The parent the change is read against. */
+  readonly parent: string;
+  /** Unified diff with paths from the repository root. */
+  readonly patch: string;
+  readonly truncated: boolean;
+  /** Per-file line counts, absent when the patch was not read whole. */
+  readonly files?: ReadonlyArray<ReviewDiffFileStat>;
+}
+
+export interface SourceControlRangeCommits {
+  readonly commits: ReadonlyArray<{
+    readonly sha: string;
+    readonly subject: string;
+    readonly committedAt: string;
+  }>;
+  /** More commits are in the range than were listed. */
+  readonly truncated: boolean;
+}
 
 export interface SourceControlGitRemoteBranch {
   readonly cwd: string;
@@ -85,6 +113,39 @@ export class SourceControlHost extends Context.Service<
       readonly run: (
         input: SourceControlProcessInput,
       ) => Effect.Effect<SourceControlProcessOutput, VcsError>;
+    };
+    /**
+     * Reads commits through whichever VCS owns `cwd`, never only Git. Paths are relative to the
+     * repository root, whatever folder below it `cwd` is.
+     */
+    readonly review: {
+      /** `file` narrows the diff to one path, and its old path for a rename. */
+      readonly commitDiff: (input: {
+        readonly cwd: string;
+        readonly commit: string;
+        readonly file?: { readonly path: string; readonly previousPath: string | null };
+      }) => Effect.Effect<SourceControlCommitDiff, VcsError | GitCommandError>;
+      /**
+       * Commits reachable from `head` but not from `base`, newest first. Both are commit hashes,
+       * never `HEAD` or a branch, so the range is the one asked about whatever is checked out.
+       */
+      readonly rangeCommits: (input: {
+        readonly cwd: string;
+        readonly base: string;
+        readonly head: string;
+        readonly limit: number;
+      }) => Effect.Effect<SourceControlRangeCommits, VcsError | GitCommandError>;
+      /** Fails unless `parent` is still the commit's first parent. */
+      readonly commitFileContents: (
+        input: Pick<ReviewDiffFileContentsInput, "changeType" | "oldPath" | "newPath"> & {
+          readonly cwd: string;
+          readonly parent: string;
+          readonly commit: string;
+        },
+      ) => Effect.Effect<
+        { readonly oldContents: string; readonly newContents: string },
+        VcsError | GitCommandError
+      >;
     };
     readonly git: {
       readonly execute: (input: {

@@ -32,7 +32,10 @@ export interface WorkspaceResult {
   readonly isOnRequiredHead: boolean;
 }
 
+import type { VcsManagedWorktrees } from "../vcs/VcsManagedWorktrees.ts";
+
 export interface WorkspaceProvider {
+  readonly managedWorktrees?: VcsManagedWorktrees;
   readonly list: (cwd: string) => Effect.Effect<ReadonlyArray<WorkspaceEntry>, VcsError>;
   readonly ensure: (input: WorkspaceEnsureInput) => Effect.Effect<WorkspaceResult, VcsError>;
   readonly recordBranch: (cwd: string, branch: string) => Effect.Effect<void, VcsError>;

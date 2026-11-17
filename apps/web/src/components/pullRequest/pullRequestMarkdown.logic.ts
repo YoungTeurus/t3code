@@ -1,6 +1,7 @@
 import {
   changeRequestReferenceAutolinker,
   resolveChangeRequestMediaUrl,
+  splitPullRequestBody,
 } from "@t3tools/client-runtime/pull-request-markdown";
 import {
   sourceControlClients,
@@ -15,6 +16,8 @@ import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified, type PluggableList } from "unified";
 
+import { remarkYfm } from "./remarkYfm";
+
 export {
   splitPullRequestBody,
   type PullRequestBodySegment,
@@ -25,7 +28,12 @@ type MarkdownNode = {
   value?: string;
   children?: MarkdownNode[];
   url?: string;
-  data?: unknown;
+  alt?: string;
+  data?: { hProperties?: Record<string, unknown> };
+  position?: {
+    readonly start: { readonly offset?: number };
+    readonly end: { readonly offset?: number };
+  };
 };
 
 const AUTOLINK_IGNORED_TYPES = new Set(["link", "linkReference"]);
@@ -78,12 +86,60 @@ function remarkChangeRequestMediaUrls(options: { readonly changeRequestUrl: stri
   return (tree: MarkdownNode) => visit(tree);
 }
 
+interface Attachment {
+  readonly url: string;
+  readonly media: "image" | "video";
+}
+
+/** The attachment `splitPullRequestBody` would cut out of a body made of `source` alone. */
+function attachment(source: string): Attachment | null {
+  if (!/https?:\/\//i.test(source)) return null;
+  const segments = splitPullRequestBody(source);
+  const only = segments.length === 1 ? segments[0] : undefined;
+  return only?.kind === "attachment" && only.media !== "unknown"
+    ? { url: only.url, media: only.media }
+    : null;
+}
+
+// The kind rides along: a video's URL need not name it.
+const media = ({ url, media }: Attachment): MarkdownNode => ({
+  type: "paragraph",
+  children: [{ type: "image", url, alt: "", data: { hProperties: { dataMediaKind: media } } }],
+});
+
+/**
+ * Attachments as media inside the one document, where `splitPullRequestBody` would cut the body
+ * around them: a paragraph or HTML block whose whole source is one attachment.
+ */
+function remarkPullRequestAttachments() {
+  return (tree: MarkdownNode, file: { readonly value?: unknown }) => {
+    const source = String(file.value ?? "");
+    const visit = (node: MarkdownNode): void => {
+      if (node.type === "paragraph") return;
+      node.children?.forEach((child, index, children) => {
+        const start = child.position?.start.offset;
+        const end = child.position?.end.offset;
+        const found =
+          (child.type === "paragraph" || child.type === "html") &&
+          start !== undefined &&
+          end !== undefined
+            ? attachment(source.slice(start, end))
+            : null;
+        if (found) children[index] = media(found);
+        else visit(child);
+      });
+    };
+    visit(tree);
+  };
+}
+
 const NO_PLUGINS: PluggableList = [];
 const markdownPlugins = new Map<string, PluggableList>();
 
 /**
  * One plugin list per repository, so every comment of a pull request shares one markdown
- * renderer and its parse cache instead of parsing again on each render.
+ * renderer and its parse cache instead of parsing again on each render. It carries the host's
+ * markdown dialect too.
  */
 export function pullRequestMarkdownPlugins(
   changeRequest: { readonly provider: string; readonly url: string } | null,
@@ -91,13 +147,19 @@ export function pullRequestMarkdownPlugins(
   if (changeRequest === null) return NO_PLUGINS;
   const repositoryUrl = sourceControlClients.parseChangeRequestUrl(changeRequest.url)?.link
     .repositoryUrl;
-  if (repositoryUrl === undefined) return NO_PLUGINS;
-  const key = `${changeRequest.provider}\u0000${repositoryUrl}`;
+  const key = `${changeRequest.provider}\u0000${repositoryUrl ?? ""}`;
   let plugins = markdownPlugins.get(key);
   if (plugins === undefined) {
     const autolinks = changeRequestReferenceAutolinker(changeRequest);
-    plugins = [[remarkChangeRequestMediaUrls, { changeRequestUrl: repositoryUrl }]];
-    if (autolinks) plugins.push([remarkPullRequestAutolinks, { autolinks }]);
+    const hostPlugins: PluggableList = [];
+    if (pullRequestMarkdownSpansAttachments(changeRequest.provider)) {
+      hostPlugins.push(remarkYfm, remarkPullRequestAttachments);
+    }
+    if (repositoryUrl !== undefined) {
+      hostPlugins.push([remarkChangeRequestMediaUrls, { changeRequestUrl: repositoryUrl }]);
+    }
+    if (autolinks) hostPlugins.push([remarkPullRequestAutolinks, { autolinks }]);
+    plugins = hostPlugins.length > 0 ? hostPlugins : NO_PLUGINS;
     markdownPlugins.set(key, plugins);
   }
   return plugins;
@@ -150,4 +212,9 @@ function commentPreviewText(node: Nodes): string {
 export function pullRequestCommentPreview(body: string): string {
   const tree = commentPreviewProcessor.runSync(commentPreviewProcessor.parse(body), body);
   return commentPreviewText(tree).replace(/\s+/gu, " ").trim();
+}
+
+/** Whether the host's markup can span attachments, so its text renders as one document. */
+export function pullRequestMarkdownSpansAttachments(provider: string): boolean {
+  return sourceControlClients.find(provider)?.yfm === true;
 }

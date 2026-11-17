@@ -600,6 +600,7 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
           searchQuery={searchQuery}
           searchResultPaths={entriesQuery.searchResultPaths}
           searchTruncated={entriesQuery.searchTruncated}
+          searchNote={entriesQuery.searchNote}
           selectedPath={entriesQuery.selectedPath}
           onPreviewFile={handlePreviewFile}
           onRefresh={entriesQuery.refresh}
@@ -1018,6 +1019,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
             searchQuery={searchQuery}
             searchResultPaths={entriesQuery.searchResultPaths}
             searchTruncated={entriesQuery.searchTruncated}
+            searchNote={entriesQuery.searchNote}
             selectedPath={entriesQuery.selectedPath}
             onRefresh={entriesQuery.refresh}
             onSelectFile={(path) => {

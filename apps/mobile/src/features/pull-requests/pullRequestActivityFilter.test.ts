@@ -65,11 +65,18 @@ describe("mobile activity filters", () => {
         comments: [
           comment("approved", bot, "APPROVED"),
           comment("changes", bot, "CHANGES_REQUESTED"),
+          comment("blocked", bot, "BLOCKED_MERGE"),
+          comment("withdrew", bot, "WITHDREW_SHIP"),
           comment("commented", bot, "COMMENTED"),
         ],
       },
       DEFAULT_ACTIVITY_FILTER,
     );
-    expect(result.activity.comments.map((entry) => entry.id)).toEqual(["approved", "changes"]);
+    expect(result.activity.comments.map((entry) => entry.id)).toEqual([
+      "approved",
+      "changes",
+      "blocked",
+      "withdrew",
+    ]);
   });
 });

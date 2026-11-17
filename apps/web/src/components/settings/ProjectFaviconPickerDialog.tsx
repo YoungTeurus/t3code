@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { useState } from "react";
 
 import { primaryServerKeybindingsAtom } from "~/state/server";
@@ -9,6 +10,7 @@ import { getLocalFileManagerName, isWindowsPlatform } from "~/lib/utils";
 import { CommandPaletteContent } from "../CommandPaletteContent";
 import type { CommandPaletteActionItem } from "../CommandPalette.logic";
 import { CommandPaletteResults } from "../CommandPaletteResults";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { PierreEntryIcon } from "../chat/PierreEntryIcon";
 import {
   getProjectFilePickerMatches,
@@ -47,6 +49,7 @@ export function ProjectFaviconPickerDialog(props: {
     PROJECT_FILE_PICKER_RESULT_LIMIT,
     { imageOnly: true },
   );
+  const source = describeSearchSource(result.source);
   const { resolvedTheme } = useTheme();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { onPickExternal: pickExternal, onSelect } = props;
@@ -112,6 +115,18 @@ export function ProjectFaviconPickerDialog(props: {
                   {`Open in ${fileManagerName}`}
                 </CommandFooterAction>
               ) : null
+            }
+            inputAccessory={
+              source ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<p className="px-3 py-2 text-xs text-muted-foreground" tabIndex={0} />}
+                  >
+                    {source.note}
+                  </TooltipTrigger>
+                  <TooltipPopup>{source.detail}</TooltipPopup>
+                </Tooltip>
+              ) : undefined
             }
             inputProps={{ placeholder: "Search image files…" }}
             mode="none"

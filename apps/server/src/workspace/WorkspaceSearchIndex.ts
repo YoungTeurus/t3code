@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - readdir with file types avoids an lstat per child
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
+import * as NodePath from "node:path";
 
 import type {
   DirItem,
@@ -555,10 +556,27 @@ function isIgnoredPath(
   return false;
 }
 
+/**
+ * Backstop for a mount Arc detection missed: a mounted checkout links `.arc` to its store, and
+ * indexing its root would walk the whole monorepo through FUSE. Arc projects search remotely.
+ */
+const isArcMountRoot = (cwd: string) =>
+  Effect.promise(async () => {
+    const real = await NodeFSP.realpath(cwd).catch(() => NodePath.resolve(cwd));
+    const marker = await NodeFSP.lstat(NodePath.join(real, ".arc")).catch(() => null);
+    return marker?.isSymbolicLink() === true;
+  });
+
+const ARC_MOUNT_ROOT_REASON =
+  "Arc mount roots are never indexed locally. Arc projects search through Code Search.";
+
 const createFinder = Effect.fn("WorkspaceSearchIndex.createFinder")(function* (
   cwd: string,
   variant: WorkspaceSearchIndexVariant,
 ) {
+  if (yield* isArcMountRoot(cwd)) {
+    return yield* new WorkspaceSearchIndexCreateFailed({ cwd, reason: ARC_MOUNT_ROOT_REASON });
+  }
   const result = yield* Effect.try({
     try: () =>
       FileFinder.create({
@@ -1131,6 +1149,10 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
     "WorkspaceSearchIndex.refresh",
   )(function* () {
+    // An index made while a worktree was unmounted must not rescan it once it is mounted again.
+    if (yield* isArcMountRoot(cwd)) {
+      return yield* new WorkspaceSearchIndexRefreshFailed({ cwd, reason: ARC_MOUNT_ROOT_REASON });
+    }
     // scanFiles waits on fff's picker lock, which its watcher can hold for seconds.
     const result = yield* Effect.tryPromise({
       try: () => finder.scanFilesAsync(),

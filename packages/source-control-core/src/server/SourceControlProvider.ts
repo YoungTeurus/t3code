@@ -30,6 +30,12 @@ export interface SourceControlProviderContext {
   readonly requestedHost?: string;
 }
 
+/** The change request a creation made, when the host's answer names it. */
+export interface SourceControlCreatedChangeRequest {
+  readonly number: number;
+  readonly url: string;
+}
+
 export interface SourceControlRefSelector {
   readonly refName: string;
   readonly owner?: string;
@@ -153,6 +159,15 @@ export class SourceControlProvider extends Context.Service<
     }) => Effect.Effect<string | null, SourceControlProviderError>;
     readonly resolveLink?: ResolveSourceControlLink;
     /**
+     * Runs `use` with the credential lookups from `cwd` would use now held for all of it, and
+     * names it, so a lookup cached for one token is not answered to another. Absent or null
+     * means one credential.
+     */
+    readonly withCredential?: <A, E, R>(
+      input: { readonly cwd: string },
+      use: (scope: string | null) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, R>;
+    /**
      * Whether `createChangeRequest` from `cwd` targets `repository`, the `owner/name` of the
      * context's remote, for a host whose tools let configuration outside the remotes name another
      * repository. Absent means it does.
@@ -193,7 +208,7 @@ export class SourceControlProvider extends Context.Service<
       readonly headSelector: string;
       readonly title: string;
       readonly bodyFile: string;
-    }) => Effect.Effect<void, SourceControlProviderError>;
+    }) => Effect.Effect<SourceControlCreatedChangeRequest | void, SourceControlProviderError>;
     readonly getRepositoryCloneUrls: (input: {
       readonly cwd: string;
       readonly context?: SourceControlProviderContext;

@@ -254,9 +254,18 @@ export const ProjectEntry = Schema.Struct({
 });
 export type ProjectEntry = typeof ProjectEntry.Type;
 
+/** A server-side index that answered a search; results without one come from the checkout. */
+export const ProjectSearchSource = Schema.Struct({
+  /** Index and branch, such as `arcadia/trunk`. */
+  index: TrimmedNonEmptyString,
+  revision: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProjectSearchSource = typeof ProjectSearchSource.Type;
+
 export const ProjectSearchEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  source: Schema.optional(ProjectSearchSource),
 });
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
@@ -292,6 +301,7 @@ export const ProjectSearchContentsResult = Schema.Struct({
   matches: Schema.Array(ProjectContentMatch),
   truncated: Schema.Boolean,
   regexFallbackError: Schema.optional(Schema.String),
+  source: Schema.optional(ProjectSearchSource),
 });
 export type ProjectSearchContentsResult = typeof ProjectSearchContentsResult.Type;
 
@@ -304,6 +314,8 @@ export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
+  /** False when folders open one at a time only, as in a project searched through a server index. */
+  wholeTreeExpansion: Schema.optional(Schema.Boolean),
 });
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
@@ -336,6 +348,7 @@ export const ProjectEntriesFailure = Schema.Literals([
   "search_index_create_failed",
   "search_index_scan_timed_out",
   "search_index_search_failed",
+  "search_service_failed",
   "directory_list_failed",
 ]);
 export type ProjectEntriesFailure = typeof ProjectEntriesFailure.Type;
@@ -352,6 +365,10 @@ function decodedProjectErrorMessage(props: object): string | undefined {
   if (!("message" in props)) return undefined;
   return typeof props.message === "string" ? props.message : undefined;
 }
+
+// A search service's detail is its user-facing reason, such as an unreachable network.
+const searchServiceMessage = (props: ProjectEntriesFailureContext) =>
+  props.failure === "search_service_failed" ? props.detail : undefined;
 
 export class ProjectSearchEntriesError extends Schema.TaggedError<ProjectSearchEntriesError>()(
   "ProjectSearchEntriesError",
@@ -379,6 +396,7 @@ export class ProjectSearchEntriesError extends Schema.TaggedError<ProjectSearchE
       ...props,
       message:
         decodedProjectErrorMessage(props) ??
+        searchServiceMessage(props) ??
         `Failed to search workspace entries in '${props.cwd}'.`,
     } as any);
   }
@@ -410,6 +428,7 @@ export class ProjectSearchContentsError extends Schema.TaggedError<ProjectSearch
       ...props,
       message:
         decodedProjectErrorMessage(props) ??
+        searchServiceMessage(props) ??
         `Failed to search workspace contents in '${props.cwd}'.`,
     } as any);
   }
@@ -432,7 +451,9 @@ export class ProjectListEntriesError extends Schema.TaggedError<ProjectListEntri
     super({
       ...props,
       message:
-        decodedProjectErrorMessage(props) ?? `Failed to list workspace entries in '${props.cwd}'.`,
+        decodedProjectErrorMessage(props) ??
+        searchServiceMessage(props) ??
+        `Failed to list workspace entries in '${props.cwd}'.`,
     } as any);
   }
 }

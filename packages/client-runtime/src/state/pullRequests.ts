@@ -1259,6 +1259,15 @@ export function createPullRequestEnvironmentAtoms<R, E>(
     previewCard,
     checks,
     activity,
+    // Only a shown timeline reads it: no refresh trigger, and it goes once the timeline hides.
+    // The server reuses Arcanum's answer for a minute.
+    reviewEvents: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:pull-requests:review-events",
+      tag: WS_METHODS.pullRequestsReviewEvents,
+      execute: (input) => routedRequest(WS_METHODS.pullRequestsReviewEvents, input),
+      staleTimeMs: 60_000,
+      idleTtlMs: 0,
+    }),
     threadComments: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:pull-requests:thread-comments",
       tag: WS_METHODS.pullRequestsThreadComments,
@@ -1396,6 +1405,20 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       label: "environment-data:pull-requests:submit-review",
       tag: WS_METHODS.pullRequestsSubmitReview,
       execute: (input) => routedRequest(WS_METHODS.pullRequestsSubmitReview, input),
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
+    runReviewAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-requests:run-review-action",
+      tag: WS_METHODS.pullRequestsRunReviewAction,
+      execute: (input) => routedRequest(WS_METHODS.pullRequestsRunReviewAction, input),
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
+    runCheckAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-requests:run-check-action",
+      tag: WS_METHODS.pullRequestsRunCheckAction,
+      execute: (input) => routedRequest(WS_METHODS.pullRequestsRunCheckAction, input),
       scheduler: commandScheduler,
       concurrency: serialPerEnvironment,
     }),

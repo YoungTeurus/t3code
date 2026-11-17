@@ -118,7 +118,9 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     rpcSession,
     isFinal,
     onAnswer,
+    settledCache,
   }: {
+    readonly settledCache?: { readonly ttlMs: number; readonly capacity: number };
     readonly refreshTrigger?: Atom.Atom<unknown>;
     readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
@@ -168,6 +170,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     execute: () => execute,
     ...(refreshTrigger === undefined ? {} : { refreshTrigger: () => refreshTrigger }),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
+    ...(settledCache === undefined ? {} : { settledCache }),
     ...(isFinal === undefined ? {} : { isFinal }),
     ...(onAnswer === undefined ? {} : { onAnswer }),
   });
@@ -1452,6 +1455,48 @@ describe("environment query lifecycle", () => {
       yield* Deferred.succeed(yield* Queue.take(requests), page([]));
       expect(yield* archivedIds).toEqual([]);
     }),
+  );
+});
+
+describe("settled query cache", () => {
+  it.effect("interrupts a query nobody reads and reuses settled answers until a refresh", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const started = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const refreshed = Latch.makeUnsafe();
+      const harness = yield* makeEnvironmentQueryHarness(
+        Effect.suspend(() => {
+          calls += 1;
+          if (calls === 3) refreshed.openUnsafe();
+          return calls === 1
+            ? Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+              )
+            : Effect.succeed(calls);
+        }),
+        { settledCache: { ttlMs: 60_000, capacity: 4 } },
+      );
+      const first = AtomRegistry.make();
+      const unmount = first.mount(harness.atom);
+      yield* Deferred.await(started);
+      unmount();
+      yield* Deferred.await(interrupted);
+
+      expect(yield* readEnvironmentQuery(first, harness.atom)).toBe(2);
+      first.dispose();
+      const second = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => second.dispose()));
+      expect(yield* readEnvironmentQuery(second, harness.atom)).toBe(2);
+      expect(calls).toBe(2);
+
+      second.mount(harness.atom);
+      expect(yield* readEnvironmentQuery(second, harness.atom)).toBe(2);
+      second.refresh(harness.atom);
+      yield* refreshed.await;
+      expect(yield* readEnvironmentQuery(second, harness.atom)).toBe(3);
+    }).pipe(Effect.scoped),
   );
 });
 

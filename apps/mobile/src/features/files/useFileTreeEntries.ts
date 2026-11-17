@@ -1,6 +1,7 @@
 import { useAtomMount, useAtomSubscribe } from "@effect/atom-react";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import { ProjectListEntriesError, type EnvironmentId, type ProjectEntry } from "@t3tools/contracts";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { useLayoutEffect, useRef, useState } from "react";
@@ -564,6 +565,8 @@ export function useFileTreeEntries(input: {
         directories.loading.size > 0 ||
         (searching && (query !== debouncedQuery || search.isPending))),
     searchTruncated: !missingRoot && searching && (search.data?.truncated ?? false),
+    searchNote:
+      !missingRoot && searching ? (describeSearchSource(search.data?.source)?.note ?? null) : null,
     loadedDirectories: new Set(directories.entries.keys()),
     loadingDirectories: directories.loading,
     loadDirectory: (path: string, retry = false) =>

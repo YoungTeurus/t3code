@@ -196,10 +196,12 @@ describe("CodexAdapterV2 runtime policy", () => {
     Effect.gen(function* () {
       const build = (
         runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
+        workspaceWriteNetworkAccess?: boolean,
       ) =>
         CodexAdapterV2.buildCodexTurnStartParams({
           nativeThreadId: `native-${runtimeMode}`,
           codexInput: [{ type: "text", text: "test" }],
+          ...(workspaceWriteNetworkAccess === undefined ? {} : { workspaceWriteNetworkAccess }),
           runtimePolicy: {
             runtimeMode,
             interactionMode: "default",
@@ -236,6 +238,15 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
       assert.equal(fullAccess.approvalsReviewer, "user");
       assert.equal(fullAccess.sandboxPolicy?.type, "dangerFullAccess");
+      // Without it the explicit policy would switch off network access enabled in config.toml.
+      assert.deepStrictEqual((yield* build("auto", true)).sandboxPolicy, {
+        type: "workspaceWrite",
+        networkAccess: true,
+      });
+      assert.deepStrictEqual((yield* build("approval-required", true)).sandboxPolicy, {
+        type: "readOnly",
+      });
+      assert.deepStrictEqual(auto.sandboxPolicy, { type: "workspaceWrite" });
     }),
   );
 
@@ -819,7 +830,8 @@ function withConfigReadBeforeTurnStart(
         offset = 0;
         clientIds = new Map();
       }
-      if (frame.method === "turn/start") {
+      // A requirements retry reuses its turn's config read.
+      if (frame.method === "turn/start" && entry.label !== "turn/start/lowered") {
         const id = frame.id + offset;
         const params = Predicate.isObject(frame.params) ? frame.params : {};
         result.push(
@@ -2393,6 +2405,109 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
       assert.lengthOf(harness.terminalEvents(), 1);
       assert.isFalse(yield* harness.hasPendingBackgroundWork);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("lowers full access to what Codex managed requirements allow and retries", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "managed-thread";
+      const nativeTurnId = "managed-turn";
+      const prompt = "work";
+      const preamble = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt });
+      const rejectedTurnStart = preamble.at(-3)!;
+      assert.equal(rejectedTurnStart.type, "expect_outbound");
+      const rejectedFrame = (rejectedTurnStart as { readonly frame: Record<string, unknown> })
+        .frame;
+      const transcript = makeCodexReplayTranscript({
+        scenario: "managed-requirements-retry",
+        entries: [
+          ...preamble.slice(0, -2),
+          {
+            type: "emit_inbound",
+            label: "turn/start/rejected",
+            frame: {
+              id: 3,
+              error: {
+                code: -32600,
+                message:
+                  "invalid thread settings override: invalid value for `sandbox_mode`: `DangerFullAccess` is not in the allowed set [ReadOnly, WorkspaceWrite] (set by MDM com.openai.codex:requirements_toml_base64)",
+              },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "configRequirements/read",
+            frame: { id: 4, method: "configRequirements/read" },
+          },
+          {
+            type: "emit_inbound",
+            label: "configRequirements/read",
+            frame: {
+              id: 4,
+              result: {
+                requirements: {
+                  allowedApprovalPolicies: ["untrusted", "on-request"],
+                  allowedSandboxModes: ["read-only", "workspace-write"],
+                },
+              },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "turn/start/lowered",
+            frame: {
+              ...rejectedFrame,
+              id: 5,
+              params: {
+                ...(rejectedFrame.params as Record<string, unknown>),
+                approvalPolicy: "on-request",
+                sandboxPolicy: { type: "workspaceWrite" },
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "turn/start",
+            frame: {
+              id: 5,
+              result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "turn/completed",
+            frame: {
+              method: "turn/completed",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              },
+            },
+          },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("managed-attempt"),
+          text: prompt,
+        }),
+      );
+      yield* harness.firstTerminal;
+      assert.equal(harness.terminalEvents()[0]?.status, "completed");
     }).pipe(
       Effect.scoped,
       Effect.provide(

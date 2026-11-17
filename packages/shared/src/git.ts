@@ -157,6 +157,14 @@ export function parseGitRemoteRepository(
   const dropSuffix = options?.keepGitSuffix ? (path: string) => path : stripGitSuffix;
   const normalized = lowerCaseRemote(value, dropSuffix);
 
+  if (/^arc:\/\//i.test(normalized)) {
+    const url = URL.parse(normalized);
+    const repositorySegments = url?.pathname.split("/").filter((segment) => segment.length > 0);
+    return url?.hostname && repositorySegments !== undefined && repositorySegments.length > 0
+      ? { host: url.hostname, path: repositorySegments.join("/") }
+      : null;
+  }
+
   if (/^(?:ssh|https?|git):\/\//i.test(normalized)) {
     try {
       // Apply suffix policy to the path: `.git` may sit before a query or fragment.

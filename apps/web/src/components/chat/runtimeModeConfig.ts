@@ -2,6 +2,7 @@ import {
   managedRuntimeModeDenial,
   type ManagedPolicySummary,
   type RuntimeMode,
+  resolveSupportedRuntimeMode,
 } from "@t3tools/contracts";
 import {
   type LucideIcon,
@@ -49,7 +50,7 @@ export function resolveCompatibleRuntimeMode(
     supportedRuntimeModes && supportedRuntimeModes.length > 0
       ? runtimeModeOptions.filter((mode) => supportedRuntimeModes.includes(mode))
       : runtimeModeOptions;
-  return { modes, mode: modes.includes(runtimeMode) ? runtimeMode : (modes[0] ?? runtimeMode) };
+  return { modes, mode: resolveSupportedRuntimeMode(runtimeMode, modes) };
 }
 
 export function resolveRuntimeModeOptions(

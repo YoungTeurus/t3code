@@ -253,6 +253,11 @@ export interface SourceControlDefinition {
   readonly changeRequest: ChangeRequestTerminology;
   readonly repositoryPathHint: string;
   readonly publicHost: string | null;
+  /**
+   * False for a host whose repositories T3 can neither clone nor create, so clients offer it in
+   * neither choice. Absent means it can.
+   */
+  readonly managesRepositories?: boolean;
   readonly publishDescription: string;
   readonly supportsRepositoryCreation?: boolean;
   readonly publishHost: (signedInHost: string | null) => string;
@@ -304,6 +309,8 @@ export interface SourceControlDefinition {
   ) => ReadonlyArray<ReferenceAutolink>;
   /** True when the host renders a single newline in change request text as a line break. */
   readonly hardLineBreaks?: boolean;
+  /** True when the host renders change request text as YFM: cuts, notes, tabs, multiline tables. */
+  readonly yfm?: boolean;
   /** Where the host lists a change request's checks. Absent means the change request's own page. */
   readonly changeRequestChecksUrl?: (changeRequestUrl: string) => string;
   /**

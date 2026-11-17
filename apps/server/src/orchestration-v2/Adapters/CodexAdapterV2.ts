@@ -22,6 +22,7 @@ import {
   codexAppServerEnvironment,
   codexDefaultReasoningEffortOverride,
 } from "../../provider/CodexProvider.ts";
+import type { CodexConfigRequirements } from "../../provider/codexManagedRequirements.ts";
 import {
   codexRateLimitsToUpdate,
   mergeCodexRateLimits,
@@ -734,6 +735,15 @@ const isProviderAdapterRuntimeRequestResponseError = Schema.is(
   ProviderAdapter.ProviderAdapterRuntimeRequestResponseError,
 );
 
+function withWorkspaceWriteNetworkAccess(
+  policy: CodexSchema.V2TurnStartParams__SandboxPolicy,
+  networkAccess: boolean | undefined,
+): CodexSchema.V2TurnStartParams__SandboxPolicy {
+  return policy.type === "workspaceWrite" && networkAccess === true
+    ? { ...policy, networkAccess: true }
+    : policy;
+}
+
 function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   readonly approvalPolicy: CodexSchema.V2TurnStartParams__AskForApproval;
   readonly approvalsReviewer: CodexSchema.V2TurnStartParams__ApprovalsReviewer;
@@ -802,6 +812,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly modelSelection: ModelSelection;
+    /** config.toml's workspace-write network access, which an explicit policy would drop. */
+    readonly workspaceWriteNetworkAccess?: boolean;
     readonly hasT3Mcp?: boolean;
     readonly browserToolsAvailable?: boolean;
     readonly deviceToolsAvailable?: boolean;
@@ -820,7 +832,10 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
     const sandboxPolicy =
       input.runtimePolicy.sandboxPolicy === undefined
-        ? runtimeModeDefaults.sandboxPolicy
+        ? withWorkspaceWriteNetworkAccess(
+            runtimeModeDefaults.sandboxPolicy,
+            input.workspaceWriteNetworkAccess,
+          )
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort =
       getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
@@ -888,6 +903,64 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     });
   },
 );
+
+const CODEX_SANDBOX_POLICIES_BY_ACCESS = [
+  { mode: "danger-full-access", policy: { type: "dangerFullAccess" } },
+  { mode: "workspace-write", policy: { type: "workspaceWrite" } },
+  { mode: "read-only", policy: { type: "readOnly" } },
+] as const;
+const CODEX_APPROVAL_POLICIES_BY_ACCESS = ["never", "on-request", "untrusted"] as const;
+
+/** Lowers turn policies that Codex managed requirements (MDM, requirements.toml) forbid to the closest allowed one. */
+function lowerCodexTurnPolicyToRequirements(
+  params: CodexTurnStartParams,
+  requirements: CodexConfigRequirements,
+  workspaceWriteNetworkAccess: boolean | undefined,
+): CodexTurnStartParams {
+  const allowedSandboxModes = requirements.allowedSandboxModes;
+  const sandboxPolicy = params.sandboxPolicy;
+  const sandboxIndex = CODEX_SANDBOX_POLICIES_BY_ACCESS.findIndex(
+    (entry) => entry.policy.type === sandboxPolicy?.type,
+  );
+  const allowedSandbox =
+    allowedSandboxModes == null || sandboxIndex < 0
+      ? undefined
+      : CODEX_SANDBOX_POLICIES_BY_ACCESS.slice(sandboxIndex).find((entry) =>
+          allowedSandboxModes.includes(entry.mode),
+        );
+
+  const allowedApprovalPolicies = requirements.allowedApprovalPolicies;
+  const approvalPolicy = params.approvalPolicy;
+  // Full access uses a granular policy. It ranks as `never` unless that exact policy is allowed.
+  const approvalIndex =
+    typeof approvalPolicy === "string"
+      ? (CODEX_APPROVAL_POLICIES_BY_ACCESS as ReadonlyArray<string>).indexOf(approvalPolicy)
+      : approvalPolicy == null ||
+          allowedApprovalPolicies?.some(
+            (allowed) => JSON.stringify(allowed) === JSON.stringify(approvalPolicy),
+          )
+        ? -1
+        : 0;
+  const allowedApproval =
+    allowedApprovalPolicies == null || approvalIndex < 0
+      ? undefined
+      : CODEX_APPROVAL_POLICIES_BY_ACCESS.slice(approvalIndex).find((policy) =>
+          allowedApprovalPolicies.includes(policy),
+        );
+
+  return {
+    ...params,
+    ...(allowedSandbox === undefined || allowedSandbox.policy.type === sandboxPolicy?.type
+      ? {}
+      : {
+          sandboxPolicy: withWorkspaceWriteNetworkAccess(
+            allowedSandbox.policy,
+            workspaceWriteNetworkAccess,
+          ),
+        }),
+    ...(allowedApproval === undefined ? {} : { approvalPolicy: allowedApproval }),
+  };
+}
 
 function providerSession(input: {
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
@@ -1832,7 +1905,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "compatibility" | "models"
+    "onUsageLimits" | "resolveRuntime" | "compatibility" | "models" | "workspaceWriteNetworkAccess"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1882,6 +1955,8 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
 export interface CodexAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
   readonly settings: CodexSettings;
+  /** Read per turn; the provider probe refreshes it. */
+  readonly workspaceWriteNetworkAccess?: Effect.Effect<boolean | undefined>;
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
@@ -2056,6 +2131,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* client.notify("initialized", undefined);
             yield* Ref.set(initialized, true);
           }),
+        );
+        // Undefined until a rejected turn/start reads them; null when none are configured.
+        const managedRequirements = yield* Ref.make<CodexConfigRequirements | null | undefined>(
+          undefined,
         );
         // A failed open is discarded, so the next turn spawns the updated binary.
         if (adapterOptions.compatibility !== undefined) yield* ensureInitialized;
@@ -7523,6 +7602,40 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         });
 
+        // Read lazily so sessions without managed requirements send no extra request.
+        const retryTurnStartWithinRequirements = Effect.fn(
+          "CodexAdapterV2.retryTurnStartWithinRequirements",
+        )(function* (
+          rejection: CodexErrors.CodexAppServerRequestError,
+          params: CodexTurnStartParams,
+          workspaceWriteNetworkAccess: boolean | undefined,
+        ) {
+          const read = yield* client
+            .request("configRequirements/read", undefined)
+            .pipe(Effect.option);
+          if (Option.isNone(read)) return yield* rejection;
+          const requirements = read.value.requirements ?? null;
+          yield* Ref.set(managedRequirements, requirements);
+          const lowered =
+            requirements === null
+              ? params
+              : lowerCodexTurnPolicyToRequirements(
+                  params,
+                  requirements,
+                  workspaceWriteNetworkAccess,
+                );
+          if (
+            lowered.sandboxPolicy === params.sandboxPolicy &&
+            lowered.approvalPolicy === params.approvalPolicy
+          )
+            return yield* rejection;
+          yield* Effect.logWarning("Codex managed requirements forbid the thread's access level.", {
+            requested: { sandbox: params.sandboxPolicy?.type, approval: params.approvalPolicy },
+            used: { sandbox: lowered.sandboxPolicy?.type, approval: lowered.approvalPolicy },
+          });
+          return yield* client.request("turn/start", lowered);
+        });
+
         const startNativeTurn = Effect.fn("CodexAdapterV2.startNativeTurn")(
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
@@ -7539,10 +7652,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined)),
                 ),
               );
-            const turnStartParams = yield* buildCodexTurnStartParams({
+            const knownRequirements = yield* Ref.get(managedRequirements);
+            const workspaceWriteNetworkAccess =
+              adapterOptions.workspaceWriteNetworkAccess === undefined
+                ? undefined
+                : yield* adapterOptions.workspaceWriteNetworkAccess;
+            const builtTurnStartParams = yield* buildCodexTurnStartParams({
               cyberAccess: codexCyberAccess(models, turnInput.modelSelection.model),
               nativeThreadId: threadId,
               codexInput,
+              ...(workspaceWriteNetworkAccess === undefined ? {} : { workspaceWriteNetworkAccess }),
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               hasT3Mcp: mcpSession !== undefined,
@@ -7552,6 +7671,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
               ...(configuredReasoningSummary === undefined ? {} : { configuredReasoningSummary }),
             });
+            const turnStartParams = knownRequirements
+              ? lowerCodexTurnPolicyToRequirements(
+                  builtTurnStartParams,
+                  knownRequirements,
+                  workspaceWriteNetworkAccess,
+                )
+              : builtTurnStartParams;
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);
               updated.set(threadId, turnInput);
@@ -7569,7 +7695,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(yield* Ref.get(settledTurns)),
               ...(yield* Ref.get(activeTurns)),
             ]);
-            const started = yield* client.request("turn/start", turnStartParams);
+            const started = yield* client.request("turn/start", turnStartParams).pipe(
+              Effect.catchTags({
+                CodexAppServerRequestError: (error) =>
+                  knownRequirements === undefined && error.code === -32600
+                    ? retryTurnStartWithinRequirements(
+                        error,
+                        turnStartParams,
+                        workspaceWriteNetworkAccess,
+                      )
+                    : Effect.fail(error),
+              }),
+            );
             const previousTurn =
               previousTurns.get(started.turn.id) ??
               (yield* Ref.get(activeTurns)).get(started.turn.id);

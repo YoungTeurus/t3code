@@ -12,9 +12,9 @@ import * as ServerConfig from "../config.ts";
 import { makeArcNativeBackend } from "./ArcNativeBackend.ts";
 
 describe("Arc native workflow backend", () => {
-  it.effect(
-    "uses native divergence and keeps an absent revision distinct from a failed query",
-    () =>
+  it.effect.each(["arcadia", "cloudia"])(
+    "%s: uses native divergence and keeps an absent revision distinct from a failed query",
+    (repository) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-arc-native-" });
@@ -53,7 +53,7 @@ describe("Arc native workflow backend", () => {
                     root,
                     cwd,
                     scope: "service",
-                    repository: "arcadia",
+                    repository,
                     head,
                     branch: "task",
                     upstream: "users/test/task",
@@ -75,7 +75,7 @@ describe("Arc native workflow backend", () => {
                               { commit: head, message: "local" },
                               { commit: "c".repeat(40), message: "earlier" },
                             ]
-                          : range === "arcadia/trunk..HEAD"
+                          : range === `${repository}/trunk..HEAD`
                             ? [{ commit: head, message: "local" }]
                             : range === "missing"
                               ? []
@@ -100,6 +100,7 @@ describe("Arc native workflow backend", () => {
         assert.equal(removed, false);
         yield* backend.removeWorktree!({ cwd: root, path: `${root}/other`, explicit: true });
         assert.equal(removed, true);
+        assert.isTrue(queries.some((args) => args.includes(`${repository}/trunk..HEAD`)));
         assert.equal(remote.aheadCount, 2);
         assert.equal(remote.behindCount, 1);
         assert.equal(remote.aheadOfDefaultCount, 1);

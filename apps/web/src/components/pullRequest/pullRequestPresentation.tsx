@@ -10,12 +10,14 @@ import type {
   PullRequestState,
 } from "@t3tools/contracts";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
+import { blockingPullRequestChecks } from "@t3tools/client-runtime/pull-request-checks";
 import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDotIcon,
   CircleSlashIcon,
   CircleXIcon,
+  ClockIcon,
   OctagonXIcon,
   UserCheckIcon,
   UserRoundIcon,
@@ -202,6 +204,7 @@ export function PullRequestConflictGlyph({
 }
 
 const CHECK_STATUS_PRESENTATION = {
+  queued: { label: "Queued", Icon: ClockIcon, toneClassName: "text-muted-foreground/70" },
   pending: { label: "Running", Icon: Spinner, toneClassName: "text-amber-500" },
   "action-required": {
     label: "Awaiting action",
@@ -278,13 +281,16 @@ export function pullRequestChecksStatePresentation(state: PullRequestChecksState
 }
 
 export function pullRequestChecksState(
-  checks: ReadonlyArray<PullRequestCheck>,
+  allChecks: ReadonlyArray<PullRequestCheck>,
 ): PullRequestChecksState | null {
+  const checks = blockingPullRequestChecks(allChecks);
   if (checks.length === 0) return null;
   const statuses = new Set(checks.map((check) => check.status));
   if (statuses.has("failure") || statuses.has("cancelled")) return "failing";
-  if (statuses.has("pending") || statuses.has("action-required")) return "pending";
-  return statuses.has("success") ? "passing" : null;
+  if (statuses.has("pending") || statuses.has("queued") || statuses.has("action-required")) {
+    return "pending";
+  }
+  return "passing";
 }
 
 const REVIEW_OUTCOME_PRESENTATION = {
@@ -546,7 +552,8 @@ export function PullRequestMetaLine({
   );
 }
 
-export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestCheck>): string {
+export function summarizePullRequestChecks(allChecks: ReadonlyArray<PullRequestCheck>): string {
+  const checks = blockingPullRequestChecks(allChecks);
   if (checks.length === 0) return "No checks reported";
   const actionRequired = checks.filter((check) => check.status === "action-required");
   const workflowApprovalRequired = actionRequired.filter(isWorkflowApprovalCheck).length;
@@ -555,6 +562,7 @@ export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestChec
     (check) => check.status === "failure" || check.status === "cancelled",
   ).length;
   const pending = checks.filter((check) => check.status === "pending").length;
+  const queued = checks.filter((check) => check.status === "queued").length;
   const passed = checks.filter((check) => check.status === "success").length;
   if (failed > 0) return `${failed} of ${checks.length} failing`;
   if (workflowApprovalRequired > 0 && otherActionRequired > 0) {
@@ -567,5 +575,6 @@ export function summarizePullRequestChecks(checks: ReadonlyArray<PullRequestChec
     return `${otherActionRequired} ${otherActionRequired === 1 ? "check" : "checks"} awaiting action`;
   }
   if (pending > 0) return `${pending} of ${checks.length} running`;
+  if (queued > 0) return `${queued} of ${checks.length} queued`;
   return passed === checks.length ? "All checks passed" : `${passed} of ${checks.length} passing`;
 }

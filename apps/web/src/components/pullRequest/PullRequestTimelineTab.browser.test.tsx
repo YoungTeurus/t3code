@@ -77,6 +77,7 @@ it("mounts only the timeline rows near the viewport of a huge pull request", asy
         environmentId={EnvironmentId.make("environment")}
         reference={detail}
         order="oldest"
+        active
         onOpenCommit={() => {}}
         onRefresh={() => {}}
       />
@@ -145,6 +146,7 @@ it.each(["review", "issue-comment", "resolved-reply"] as const)(
         <PullRequestTimelineTab
           scrollerRef={() => {}}
           detail={linkedDetail}
+          active
           environmentId={EnvironmentId.make("environment")}
           reference={detail}
           order="oldest"
@@ -162,6 +164,7 @@ it.each(["review", "issue-comment", "resolved-reply"] as const)(
         <PullRequestTimelineTab
           scrollerRef={() => {}}
           detail={linkedDetail}
+          active
           environmentId={EnvironmentId.make("environment")}
           reference={detail}
           order="oldest"

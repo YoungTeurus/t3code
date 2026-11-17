@@ -11,6 +11,8 @@ import { VcsRepositoryDetectionError } from "@t3tools/contracts";
 import * as ArcOperations from "../vcs/ArcOperations.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ServerConfig from "../config.ts";
+import type { VcsManagedWorktrees } from "../vcs/VcsManagedWorktrees.ts";
+import * as ArcCli from "../vcs/ArcCli.ts";
 import type {
   WorkspaceEntry,
   WorkspaceEnsureInput,
@@ -63,13 +65,24 @@ const Registration = Schema.Struct({
   branch: Schema.String,
   owner: Schema.String,
   baseRevision: Schema.String,
+  createdByT3: Schema.optional(Schema.Boolean),
+  mountIdentity: Schema.optional(Schema.String),
+  projectPath: Schema.optional(Schema.String),
 });
+const CleanupStatus = Schema.Struct({
+  status: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)),
+});
+const CleanupBranches = Schema.Array(
+  Schema.Struct({ name: Schema.String, local: Schema.optional(Schema.Boolean) }),
+);
+const CleanupStashes = Schema.Array(Schema.Unknown);
 const decodeRegistration = Schema.decodeEffect(Schema.fromJsonString(Registration));
 const encodeRegistration = Schema.encodeEffect(Schema.fromJsonString(Registration));
 
 export const makeArcWorkspaces = Effect.fn("ArcWorkspaceProvider.make")(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const process = yield* VcsProcess.VcsProcess;
+  const cli = yield* ArcCli.ArcCli.pipe(Effect.provide(ArcCli.layer));
   const ops = yield* ArcOperations.ArcOperations;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -307,6 +320,9 @@ export const makeArcWorkspaces = Effect.fn("ArcWorkspaceProvider.make")(function
         branch: actual.branch,
         owner,
         baseRevision: saved?.baseRevision ?? input.baseRevision,
+        createdByT3: created || saved?.createdByT3 === true,
+        mountIdentity: actual.identity,
+        projectPath: cwd,
       });
       return {
         root: actual.root,
@@ -362,5 +378,105 @@ export const makeArcWorkspaces = Effect.fn("ArcWorkspaceProvider.make")(function
     },
   );
 
-  return { list, ensure, recordBranch, remove } satisfies WorkspaceProvider;
+  const inspectManaged: VcsManagedWorktrees["inspect"] = Effect.fn(
+    "ArcWorkspaceProvider.inspectManaged",
+  )(function* (input) {
+    const keep = (reason: string) => ({ _tag: "Keep" as const, reason });
+    const ctx = yield* ops.context(input.path);
+    const saved = yield* readRegistration(ctx.root);
+    if (saved?.createdByT3 !== true) return keep("T3 has no record of creating this Arc copy");
+    if (
+      saved.root !== ctx.root ||
+      saved.mountIdentity !== ctx.identity ||
+      ctx.identity === `${ctx.root}\0${ctx.root}` ||
+      saved.projectPath !== ctx.cwd ||
+      saved.branch !== input.branch ||
+      ctx.branch !== input.branch ||
+      ctx.branch === "trunk"
+    )
+      return keep("Arc copy identity or branch changed");
+    const entry = (yield* list(config.stateDir)).find(
+      (entry) => entry.root === ctx.root && entry.name === saved.name,
+    );
+    if (!entry || entry.leaseOwner !== saved.owner || !entry.leaseRenewed)
+      return keep("Arc copy lease changed");
+    if (ctx.head !== saved.baseRevision) return keep("Arc copy has commits since creation");
+    const status = yield* cli.runJson(
+      {
+        cwd: ctx.root,
+        operation: "ArcWorkspaceProvider.cleanupStatus",
+        args: [
+          "status",
+          "--json",
+          "--ignored",
+          "-u",
+          "all",
+          "--no-ahead-behind",
+          "--no-sync-status",
+          "--no-bisect-status",
+        ],
+      },
+      CleanupStatus,
+    );
+    if (Object.values(status.status).some((entries) => entries.length > 0))
+      return keep("Arc copy has local or ignored changes");
+    const stashes = yield* cli.runJson(
+      {
+        cwd: ctx.root,
+        operation: "ArcWorkspaceProvider.cleanupStash",
+        args: ["stash", "list", "--json"],
+      },
+      CleanupStashes,
+    );
+    if (stashes.length > 0) return keep("Arc copy has stashed changes");
+    const branches = yield* cli.runJson(
+      {
+        cwd: ctx.root,
+        operation: "ArcWorkspaceProvider.cleanupBranches",
+        args: ["branch", "--json", "-v"],
+      },
+      CleanupBranches,
+    );
+    if (
+      branches.some(
+        (branch) => branch.local !== false && branch.name !== ctx.branch && branch.name !== "trunk",
+      )
+    )
+      return keep("Arc copy has another local branch");
+    return { _tag: "Candidate", worktree: { scope: ctx.root, head: ctx.head, unchanged: true } };
+  });
+  const managedWorktrees: VcsManagedWorktrees = {
+    inspect: inspectManaged,
+    remove: Effect.fn("ArcWorkspaceProvider.removeManaged")(function* (input) {
+      const inspected = yield* inspectManaged(input);
+      if (inspected._tag === "Keep") return inspected.reason;
+      if (inspected.worktree.head !== input.head) return "Arc copy commit changed since inspection";
+      const saved = yield* readRegistration(inspected.worktree.scope);
+      const entry = (yield* list(config.stateDir)).find(
+        (entry) => entry.root === inspected.worktree.scope && entry.name === saved?.name,
+      );
+      if (!saved || !entry?.leaseRenewed || entry.leaseOwner !== saved.owner)
+        return "Arc copy lease changed";
+      const blocked = yield* input.guard;
+      if (blocked !== null) return blocked;
+      yield* run(config.stateDir, [
+        "remove",
+        entry.name,
+        "--lease-owner",
+        saved.owner,
+        "--lease-renewed",
+        entry.leaseRenewed,
+      ]);
+      if ((yield* list(config.stateDir)).some((candidate) => candidate.root === entry.root))
+        return "Arc copy removal was not confirmed";
+      yield* io(
+        config.stateDir,
+        "deleteRegistration",
+        fs.remove(yield* registrationPath(entry.root), { force: true }),
+      );
+      return null;
+    }),
+  };
+
+  return { list, ensure, recordBranch, remove, managedWorktrees } satisfies WorkspaceProvider;
 });

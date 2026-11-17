@@ -57,6 +57,7 @@ import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import { isNonRepositoryGitStderr } from "./vcs/GitVcsDriverCore.ts";
 import { isLinkedWorktree, removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
 import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
@@ -325,6 +326,7 @@ const make = Effect.gen(function* () {
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const vcsRegistry = yield* Effect.serviceOption(VcsDriverRegistry.VcsDriverRegistry);
   const gitManager = yield* GitManager.GitManager;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
   const reconcileBranch = yield* WorktreeBranchSync.makeReconcile;
@@ -471,6 +473,8 @@ const make = Effect.gen(function* () {
           if (result === null) return incomplete;
           if (inspectRepositories && isNestedRepository(result.target, result.names))
             return { bytes: null, reason: "contains a nested Git repository" };
+          if (result.names.includes(".arc"))
+            return { bytes: null, reason: "contains an Arc checkout" };
           bytes += result.bytes;
           entries += result.names.length;
           if (entries > 2_000_000) return incomplete;
@@ -1422,6 +1426,56 @@ const make = Effect.gen(function* () {
               });
             }),
           );
+        }
+        const nativeOwner = Option.isSome(vcsRegistry)
+          ? yield* vcsRegistry.value.detect({ cwd: worktreePath })
+          : null;
+        if (nativeOwner?.kind === "arc") {
+          const managed = nativeOwner.driver.workspace?.managedWorktrees;
+          if (!managed || thread.branch === null)
+            return keep("Arc copy ownership cannot be verified");
+          const input = {
+            path: worktreePath,
+            branch: thread.branch,
+            keepWhen: settings.worktreeKeepWhen,
+          };
+          const inspected = yield* managed.inspect(input);
+          if (inspected._tag === "Keep") return keep(inspected.reason);
+          const scope = inspected.worktree.scope;
+          if (!eligible && unchangedApplies && inspected.worktree.unchanged) {
+            eligible = true;
+            removalReason = "no commits since the Arc copy was created";
+          }
+          if (!eligible) return keep(notDueReason);
+          const guard = Effect.gen(function* () {
+            const blocked = yield* blockedSinceCheck();
+            if (blocked !== null) return blocked;
+            if (yield* settingsChangedSinceCheck) return "settings changed since check";
+            if (yield* containsProjectRoot([scope], yield* projectStore.listShells()))
+              return "Arc copy contains a project checkout";
+            if (yield* hasTerminal([scope])) return waitForStop("open terminal in the Arc copy");
+            const bindings = yield* projections.getThreadWorktreePaths({ includeArchived: true });
+            for (const binding of bindings) {
+              if (group.some((member) => member.id === binding.threadId)) continue;
+              const target = yield* canonical(binding.worktreePath);
+              if (pathKey(target) === pathKey(scope) || inside(scope, target))
+                return "Arc copy is shared by another thread";
+            }
+            return null;
+          });
+          const reason = yield* withWorkspaceLease(
+            `arc:${scope}`,
+            managed.remove({ ...input, head: inspected.worktree.head, guard }),
+          );
+          if (reason !== null) return keep(reason);
+          entries.push({
+            ...entry,
+            outcome: "removed",
+            reason: sentence(removalReason),
+            bytes: null,
+          });
+          yield* gitManager.invalidateStatus(project.workspaceRoot);
+          return;
         }
         const pathReason = yield* worktreePathReason(worktreePath);
         if (pathReason !== null) return keep(pathReason);

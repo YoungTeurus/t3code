@@ -9,6 +9,7 @@ import {
   type EnvironmentId as EnvironmentIdType,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -102,6 +103,12 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
     readonly input: Input;
   }) => Atom.Atom<unknown> | undefined;
   readonly isFinal?: (value: A) => boolean;
+  /**
+   * Interrupts a pending query as soon as nothing reads it, instead of after `idleTtlMs`. Up to
+   * `capacity` settled answers stay for `ttlMs`, so a reader that comes back gets one without a
+   * new request. A refresh of a query that is being read always asks again.
+   */
+  readonly settledCache?: { readonly ttlMs: number; readonly capacity: number };
   /**
    * Runs where each server answer lands, before readers see it, so derived records (summaries,
    * snapshots, watches) come from the producer instead of from components watching the data.
@@ -719,9 +726,19 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
   // `Atom.family` holds members weakly and the mounted layer has no TTL, so each member lives
   // as long as its cache: keyed weakly, this lets both go once the cache's TTL ends.
   const membersByCache = new WeakMap<Atom.Atom<unknown>, Atom.Atom<unknown>>();
+  const settledCache = options.settledCache;
+  const settled = new Map<string, { readonly value: A; readonly at: number }>();
+  const rememberSettled = (key: string, value: A, at: number, capacity: number) => {
+    settled.delete(key);
+    settled.set(key, { value, at });
+    for (const oldest of settled.keys()) {
+      if (settled.size <= capacity) break;
+      settled.delete(oldest);
+    }
+  };
   const family = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
-    const idleTtlMs = options.idleTtlMs ?? 5 * 60_000;
+    const idleTtlMs = settledCache === undefined ? (options.idleTtlMs ?? 5 * 60_000) : 0;
     const queryAtom = runtime
       .atom<
         A,
@@ -811,13 +828,31 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           }
         };
         const onAnswer = options.onAnswer;
-        const answer = () =>
+        const answerFromServer = () =>
           onAnswer === undefined
             ? execute().pipe(Effect.map(share))
             : execute().pipe(
                 Effect.map(share),
                 Effect.tap((value) => onAnswer(target, value, get.registry)),
               );
+        const answer = () => {
+          // Only an answer that would go to the server can come from the cache instead.
+          if (settledCache === undefined || connection?.[0].phase !== "connected") {
+            return answerFromServer();
+          }
+          const mounted = Option.isSome(
+            Option.flatMap(get.self<AsyncResult.AsyncResult<A, unknown>>(), AsyncResult.value),
+          );
+          return Effect.gen(function* () {
+            const hit = settled.get(key);
+            if (!mounted && hit !== undefined) {
+              if ((yield* Clock.currentTimeMillis) - hit.at < settledCache.ttlMs) return hit.value;
+            }
+            const value = yield* answerFromServer();
+            rememberSettled(key, value, yield* Clock.currentTimeMillis, settledCache.capacity);
+            return value;
+          });
+        };
         if (!options.persistence) return answer();
         const persistence = options.persistence;
         const cacheKey = queryPersistenceKey(options.label, target.input);
@@ -961,6 +996,12 @@ export function createEnvironmentRpcQueryAtomFamily<
     readonly persistence?: QueryPersistence<EnvironmentRpcSuccess<TTag>>;
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
+    readonly settledCache?: EnvironmentQueryAtomOptions<
+      unknown,
+      unknown,
+      never,
+      never
+    >["settledCache"];
     readonly refreshIntervalMs?: number;
     readonly refreshTrigger?: (target: {
       readonly environmentId: EnvironmentIdType;
@@ -975,6 +1016,7 @@ export function createEnvironmentRpcQueryAtomFamily<
     ...(options.persistence === undefined ? {} : { persistence: options.persistence }),
     ...(options.staleTimeMs === undefined ? {} : { staleTimeMs: options.staleTimeMs }),
     ...(options.idleTtlMs === undefined ? {} : { idleTtlMs: options.idleTtlMs }),
+    ...(options.settledCache === undefined ? {} : { settledCache: options.settledCache }),
     ...(options.refreshIntervalMs === undefined
       ? {}
       : { refreshIntervalMs: options.refreshIntervalMs }),

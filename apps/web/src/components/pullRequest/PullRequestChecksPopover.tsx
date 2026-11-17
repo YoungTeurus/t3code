@@ -1,3 +1,4 @@
+import { blockingPullRequestChecks } from "@t3tools/client-runtime/pull-request-checks";
 import type * as React from "react";
 import type {
   EnvironmentId,
@@ -10,6 +11,7 @@ import { useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
 import { cn } from "~/lib/utils";
+import { useServerConfigs } from "~/state/entities";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
 
@@ -36,20 +38,29 @@ function LazyChecksBody({
   reference: PullRequestRef;
   threadRef: ScopedThreadRef | null;
 }) {
-  const detailQuery = useEnvironmentQuery(
-    pullRequestEnvironment.detail({ environmentId, input: reference }),
+  const supportsChecks =
+    useServerConfigs().get(environmentId)?.environment.capabilities.pullRequestChecks === true;
+  const checksQuery = useEnvironmentQuery(
+    supportsChecks ? pullRequestEnvironment.checks({ environmentId, input: reference }) : null,
   );
-  if (detailQuery.error !== null) {
-    return <p className="text-muted-foreground text-xs">{detailQuery.error}</p>;
+  // The checks read can carry more than the detail, such as Arcanum's CI links. A host
+  // without one answers null, and its detail has the checks.
+  const fromDetail = !supportsChecks || (checksQuery.isSuccess && checksQuery.data === null);
+  const detailQuery = useEnvironmentQuery(
+    fromDetail ? pullRequestEnvironment.detail({ environmentId, input: reference }) : null,
+  );
+  const query = fromDetail ? detailQuery : checksQuery;
+  if (query.error !== null) {
+    return <p className="text-muted-foreground text-xs">{query.error}</p>;
   }
-  if (detailQuery.data === null) {
+  if (query.data === null) {
     return (
       <p className="text-muted-foreground text-xs">
-        {detailQuery.isPending ? "Loading checks…" : "No checks reported"}
+        {query.isPending || !query.isSuccess ? "Loading checks…" : "No checks reported"}
       </p>
     );
   }
-  return <ChecksBody checks={detailQuery.data.checks} threadRef={threadRef} />;
+  return <ChecksBody checks={query.data.checks} threadRef={threadRef} />;
 }
 
 function ChecksBody({
@@ -149,12 +160,13 @@ export function PullRequestChecksPopover({
   render?: React.ReactElement;
 }) {
   const presentation = pullRequestChecksStatePresentation(checksState);
+  const blocking = checks === undefined ? undefined : blockingPullRequestChecks(checks);
   const incompleteCount =
-    checks?.filter((check) => check.status === "pending" || check.status === "action-required")
+    blocking?.filter((check) => ["pending", "queued", "action-required"].includes(check.status))
       .length ?? 0;
   const failedCount =
-    checks?.filter((check) => check.status === "failure" || check.status === "cancelled").length ??
-    0;
+    blocking?.filter((check) => check.status === "failure" || check.status === "cancelled")
+      .length ?? 0;
   const summary = checks === undefined || stale ? null : summarizePullRequestChecks(checks);
   return (
     <Popover>
@@ -181,11 +193,11 @@ export function PullRequestChecksPopover({
         <presentation.Icon aria-hidden className={cn("size-3.5", presentation.toneClassName)} />
         {variant === "count" ? (
           <>
-            {checks !== undefined && incompleteCount > 0 ? (
+            {blocking !== undefined && incompleteCount > 0 ? (
               // Clip the second line so "checks" disappears whole when the count must shrink.
               <span className="h-lh min-w-0 overflow-hidden text-left whitespace-normal tabular-nums">
                 <span className="whitespace-nowrap">
-                  {checks.length - incompleteCount}/{checks.length}
+                  {blocking.length - incompleteCount}/{blocking.length}
                 </span>{" "}
                 checks
               </span>

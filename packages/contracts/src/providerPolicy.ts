@@ -41,6 +41,26 @@ const RUNTIME_MODE_RANK: Record<RuntimeMode, number> = {
 /** Whether `mode` grants the agent more than `ceiling`; no ceiling allows every mode. */
 export const isRuntimeModeAbove = (mode: RuntimeMode, ceiling: RuntimeMode | undefined): boolean =>
   ceiling !== undefined && RUNTIME_MODE_RANK[mode] > RUNTIME_MODE_RANK[ceiling];
+/**
+ * The mode a thread runs in on a provider: the broadest supported mode no broader than
+ * `runtimeMode`. Never broader, so `runtimeMode` stays when none is. Every mode is supported
+ * when none are listed.
+ */
+export function resolveSupportedRuntimeMode(
+  runtimeMode: RuntimeMode,
+  supportedRuntimeModes: ReadonlyArray<RuntimeMode> | undefined,
+): RuntimeMode {
+  if (
+    supportedRuntimeModes === undefined ||
+    supportedRuntimeModes.length === 0 ||
+    supportedRuntimeModes.includes(runtimeMode)
+  ) {
+    return runtimeMode;
+  }
+  const modes = RuntimeMode.literals.filter((mode) => supportedRuntimeModes.includes(mode));
+  const rank = RuntimeMode.literals.indexOf(runtimeMode);
+  return modes.findLast((mode) => RuntimeMode.literals.indexOf(mode) < rank) ?? runtimeMode;
+}
 
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;

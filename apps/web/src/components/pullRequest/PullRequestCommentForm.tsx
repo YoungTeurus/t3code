@@ -9,6 +9,7 @@ import { pullRequestEnvironment } from "~/state/pullRequests";
 
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { PullRequestIssueToggle } from "./PullRequestIssueControls";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import {
   PullRequestMarkdownTextarea,
@@ -43,6 +44,7 @@ export function PullRequestCommentForm({
   onClose: () => void;
 }) {
   const [body, setBody] = useState("");
+  const [isIssue, setIsIssue] = useState(false);
   const [submitting, setSubmitting] = useState<"comment" | "close" | "reopen" | null>(null);
   const locked = submitting !== null || actionPending;
   const speech = useTextFieldSpeech({
@@ -92,6 +94,7 @@ export function PullRequestCommentForm({
       input: {
         ...reference,
         body: trimmed,
+        ...(isIssue ? { isIssue } : {}),
       },
     });
     if (result._tag === "Failure") {
@@ -100,6 +103,7 @@ export function PullRequestCommentForm({
       return;
     }
     setBody("");
+    setIsIssue(false);
     setSubmitting(null);
     onClose();
     onCommented();
@@ -137,6 +141,14 @@ export function PullRequestCommentForm({
         }}
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="mr-auto flex min-w-0 flex-wrap items-center gap-1">
+          <PullRequestIssueToggle
+            detail={detail}
+            checked={isIssue}
+            disabled={locked}
+            onCheckedChange={setIsIssue}
+          />
+        </div>
         <TextFieldSpeechControls speech={speech} disabled={locked} />
         {followUpAction === null ? null : (
           <Button

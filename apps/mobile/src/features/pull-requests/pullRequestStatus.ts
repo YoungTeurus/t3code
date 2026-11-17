@@ -6,6 +6,8 @@ import type {
   PullRequestListEntry,
   PullRequestMergeability,
 } from "@t3tools/contracts";
+import { blockingPullRequestChecks } from "@t3tools/client-runtime/pull-request-checks";
+
 import type { AppSymbolName } from "../../components/ui/AppSymbol";
 import { PullRequestGlyph } from "./pullRequestGlyphs";
 
@@ -78,7 +80,9 @@ export function checkStatus(check: PullRequestCheck) {
         tint: "accent-warning-foreground",
       } as const;
     case "pending":
-      return { label: "Pending", icon: "clock", tint: "accent-warning-foreground" } as const;
+      return { label: "Running", icon: "clock", tint: "accent-warning-foreground" } as const;
+    case "queued":
+      return { label: "Queued", icon: "clock", tint: "accent-icon-muted" } as const;
     case "cancelled":
       return { label: "Cancelled", icon: "minus", tint: "accent-icon-muted" } as const;
     case "skipped":
@@ -93,11 +97,13 @@ export function isFailingCheck(check: PullRequestCheck) {
 }
 
 export function pullRequestChecksSummary(pr: Pick<PullRequestDetail, "checks">) {
-  const failed = pr.checks.filter(isFailingCheck).length;
-  const required = pr.checks.filter((check) => check.status === "action-required").length;
-  const pending = pr.checks.filter((check) => check.status === "pending").length;
-  const passed = pr.checks.filter((check) => check.status === "success").length;
-  const count = pr.checks.length ? `${passed} of ${pr.checks.length}` : undefined;
+  const checks = blockingPullRequestChecks(pr.checks);
+  const failed = checks.filter(isFailingCheck).length;
+  const required = checks.filter((check) => check.status === "action-required").length;
+  const pending = checks.filter((check) => check.status === "pending").length;
+  const queued = checks.filter((check) => check.status === "queued").length;
+  const passed = checks.filter((check) => check.status === "success").length;
+  const count = checks.length ? `${passed} of ${checks.length}` : undefined;
   if (failed)
     return {
       label: `${failed} ${failed === 1 ? "check" : "checks"} failing`,
@@ -116,23 +122,31 @@ export function pullRequestChecksSummary(pr: Pick<PullRequestDetail, "checks">) 
     } as const;
   if (pending)
     return {
-      label: `${pending} pending`,
+      label: `${pending} running`,
       title: "Checks running",
-      count: `${pending} pending`,
+      count: `${pending} running`,
       icon: "clock",
       tint: "accent-warning-foreground",
     } as const;
+  if (queued)
+    return {
+      label: `${queued} queued`,
+      title: "Checks queued",
+      count: `${queued} queued`,
+      icon: "clock",
+      tint: "accent-icon-muted",
+    } as const;
   if (passed)
     return {
-      label: `${passed} of ${pr.checks.length} passed`,
-      title: passed === pr.checks.length ? "All checks passed" : "Checks completed",
+      label: `${passed} of ${checks.length} passed`,
+      title: passed === checks.length ? "All checks passed" : "Checks completed",
       count,
       icon: "checkmark.circle",
       tint: "accent-adaptive-emerald-600-400",
     } as const;
   return {
-    label: pr.checks.length ? `${pr.checks.length} completed` : "No checks reported",
-    title: pr.checks.length ? "Checks completed" : "No checks reported",
+    label: checks.length ? `${checks.length} completed` : "No checks reported",
+    title: checks.length ? "Checks completed" : "No checks reported",
     count,
     icon: "minus",
     tint: "accent-icon-muted",

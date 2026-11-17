@@ -109,6 +109,16 @@ describe("project RPC errors", () => {
     expect(contentSearchError.message).not.toContain(cause.message);
     expect(contentSearchError).not.toHaveProperty("query");
     expect(contentSearchError.cause).toBe(cause);
+
+    const serviceError = new ProjectSearchContentsError({
+      cwd: "/workspace",
+      queryLength: 6,
+      limit: 100,
+      failure: "search_service_failed",
+      detail: "Code Search failed (HTTP 503).",
+      cause,
+    });
+    expect(serviceError.message).toBe("Code Search failed (HTTP 503).");
   });
 
   it("decodes legacy message-only errors during rolling upgrades", () => {

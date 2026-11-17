@@ -28,25 +28,28 @@ and choose **Rescan**.
 
 ### Arc and Arcanum
 
-Install Arc and authenticate it on the machine running the T3 server. Open an existing mounted
-project directory below the Arcadia checkout root, then rescan **Settings → Source control**.
-Arcanum uses the token saved in Settings, `ARCANUM_TOKEN` / `ARC_TOKEN`, or the Arc CLI credential.
-Creating a PR through Arc requires the CLI and API to use the same account.
+Open a project folder inside an existing Arcadia or Cloudia mount on the machine running the T3
+server. Status, diffs, branches and commits use Arc. A commit includes only the project folder.
+**Current checkout** uses the existing mount; **Worktree** uses `ya tool arc-wt` and starts the
+thread in the same project folder within the new copy. T3 records ownership and leases for copies
+it creates. Manual removal refuses copies it does not own, and the native tool checks whether
+removal is safe. Automatic cleanup removes only exclusively owned copies created by this T3 server,
+and only when their original commit, mount identity and lease still match. Local files, ignored files,
+stashes and additional branches keep the copy. Manual copies and older ownership records are kept.
 
-Choose **Current checkout** to create or switch ordinary Arc branches in the existing mount.
-Projects on that mount share its active branch. Choose **New worktree** for an isolated task;
-this requires `ya tool arc-wt`. T3 acquires a workspace lease, preserves arc-wt setup hooks,
-and reuses the registered workspace after a restart. Automatic cleanup keeps Arc workspaces.
+Arcanum uses the token saved in **Settings → Source control**, `ARCANUM_TOKEN` / `ARC_TOKEN`,
+`~/.arc/token`, or the Arc CLI credential, in that order. Existing saved host tokens still work.
+A rejected credential stops the operation. Creating a PR requires Arc and Arcanum to use the same account.
 
-Diffs, commits, push, PR links and review use the same controls as other repositories.
-Turn checkpoints stay outside the mount; restore affects the opened project and keeps the
-current branch HEAD. Open a service directory rather than the monorepo root for turn restore
-and file search. Existing Arcanum PRs can be opened with their `/review/<id>` URL.
+Open an Arcanum `/review/<id>` URL to view its diff and comments or continue it in an isolated Arc
+copy. Review actions include **Ship**, **Sticky Ship**, **Block merge**, withdrawing your decision,
+and auto-merge, subject to Arcanum's permissions. Comments can be issues; an issue can be resolved,
+dropped or reopened. Descriptions and comments support YFM cuts, notes, tabs, layouts and multiline tables.
 
-This version supports comments, line and range reviews, issue resolution and approval.
-Merge, request-changes, repository creation and cloning Arcadia are unavailable in T3;
-complete those operations in Arcanum or with the native tools. General PR comments remain
-in the activity timeline; only file comments are shown as review threads.
+File search, `@` path mentions and content search use the repository's Code Search index, scoped to
+the project folder. Results identify `arcadia/trunk` or `cloudia/trunk` and do not include recent local
+edits. A failed search remains an error; T3 never falls back to scanning the Arc mount. Cloudia
+search requires an OAuth token with `codesearch:search` access.
 
 ### GitHub
 

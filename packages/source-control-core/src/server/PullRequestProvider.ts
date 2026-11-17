@@ -15,6 +15,7 @@ import type {
   PullRequestChecks,
   PullRequestComment,
   PullRequestFileViewed,
+  PullRequestIssueState,
   PullRequestCommit,
   PullRequestInvolvement,
   PullRequestLabel,
@@ -30,6 +31,8 @@ import type {
   PullRequestReviewCommentDraft,
   PullRequestReviewDecision,
   PullRequestOverviewThread,
+  PullRequestReviewStatus,
+  PullRequestCheckAction,
   PullRequestReviewThread,
   PullRequestThreadCommentsResult,
   PullRequestReviewVerdict,
@@ -165,6 +168,11 @@ export interface ProviderChangeRequestPage {
    * rows above it closing between reads.
    */
   readonly resumeAfter?: string;
+  /**
+   * The update time of the oldest row read, for a page whose rows the host's own filtering left
+   * empty. Without it a slice with no rows would end the listing though more rows follow.
+   */
+  readonly scannedThrough?: string;
   readonly continues: boolean;
 }
 
@@ -228,6 +236,8 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly autoMergeMethod?: PullRequestMergeMethod;
   readonly workflowApprovalsRequired?: number;
   readonly mergeQueueRemoval?: PullRequestMergeQueueRemoval;
+  readonly reviewStatus?: PullRequestReviewStatus;
+  readonly checkActions?: ReadonlyArray<PullRequestCheckAction>;
 }
 
 export interface ProviderChangeRequestActivity {
@@ -317,8 +327,23 @@ export interface PullRequestProviderApi {
     { readonly accountId: string; readonly viewer: string },
     PullRequestProviderError
   >;
+  /**
+   * Runs `use` with the credential reads on `host` would use now held for all of it, found
+   * without asking the host, and names it: caches and rate-limit pauses kept under the name are
+   * always the credential the reads went out with, so a replaced token never answers from
+   * another one's reads. Null without a credential. Absent means one credential per host.
+   */
+  readonly withCredential?: <A, E, R>(
+    input: { readonly host: string },
+    use: (scope: string | null) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   readonly kind: SourceControlProviderKind;
   readonly capabilities: PullRequestCapabilities;
+  /**
+   * `getChangeRequest` reads every check, as `getChangeRequestChecks` would, and fails rather
+   * than return part of them, so its checks answer a checks read made at the same time.
+   */
+  readonly detailChecksComplete?: boolean;
   /**
    * What a reader is told when this host cannot be read on the server: `missing` for no tool or
    * credential, `unauthenticated` for one the host refused. Absent means a generic sentence.
@@ -327,6 +352,10 @@ export interface PullRequestProviderApi {
     readonly missing: string;
     readonly unauthenticated: string;
   };
+  /** The host's repository for a globally numbered change request. */
+  readonly resolveChangeRequestRepository?: (
+    input: Pick<ProviderRepositoryRef, "cwd" | "host"> & { readonly number: number },
+  ) => Effect.Effect<string, PullRequestProviderError>;
   readonly mergeMessageRewrite?: (message: string) => string;
   /** Use matching checkout keys instead of `owner/name`. */
   readonly repositoryKey?: (input: { readonly canonicalKey: string }) => string;
@@ -531,7 +560,12 @@ export interface PullRequestProviderApi {
   ) => Effect.Effect<void, PullRequestProviderError>;
 
   readonly comment: (
-    input: ProviderRepositoryRef & { readonly number: number; readonly body: string },
+    input: ProviderRepositoryRef & {
+      readonly number: number;
+      readonly body: string;
+      /** Only for a host with `review.issues`. */
+      readonly isIssue?: boolean;
+    },
   ) => Effect.Effect<void, PullRequestProviderError>;
 
   readonly updateComment?: (
@@ -550,6 +584,30 @@ export interface PullRequestProviderApi {
       readonly verdict: PullRequestReviewVerdict;
       readonly body: string;
       readonly comments: ReadonlyArray<PullRequestReviewCommentDraft>;
+    },
+  ) => Effect.Effect<void, PullRequestProviderError>;
+
+  /** Runs one of the detail's `reviewStatus.actions`; for a host that reports them. */
+  readonly runReviewAction?: (
+    input: ProviderRepositoryRef & {
+      readonly number: number;
+      readonly actionId: string;
+      readonly expectedHeadSha?: string;
+    },
+  ) => Effect.Effect<void, PullRequestProviderError>;
+
+  /** Review decisions apart from the activity; for a host with `capabilities.reviewEvents`. */
+  readonly getChangeRequestReviewEvents?: (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) => Effect.Effect<ReadonlyArray<PullRequestComment>, PullRequestProviderError>;
+
+  /** Runs one of the detail's check actions; for a host that reports them. */
+  readonly runCheckAction?: (
+    input: ProviderRepositoryRef & {
+      readonly number: number;
+      readonly actionId: string;
+      readonly reason?: string;
+      readonly expectedHeadSha?: string;
     },
   ) => Effect.Effect<void, PullRequestProviderError>;
 
@@ -638,6 +696,8 @@ export interface PullRequestProviderApi {
       readonly number: number;
       readonly threadId: string;
       readonly resolved: boolean;
+      /** Only for a host with `review.issues`. */
+      readonly issueState?: PullRequestIssueState;
     },
   ) => Effect.Effect<void, PullRequestProviderError>;
 }

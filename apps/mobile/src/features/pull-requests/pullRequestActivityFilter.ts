@@ -23,10 +23,17 @@ function isBot(actor: PullRequestActor | null) {
   return actor?.isBot === true;
 }
 
-// A bot's approval or change request is a verdict, not chatter.
+// A bot's review decision, or its withdrawal, is a verdict, not chatter.
+const VERDICTS = new Set([
+  "APPROVED",
+  "CHANGES_REQUESTED",
+  "BLOCKED_MERGE",
+  "WITHDREW_SHIP",
+  "WITHDREW_CHANGES_REQUEST",
+  "LIFTED_MERGE_BLOCK",
+]);
 function isVerdict(reviewState: string | null) {
-  const state = reviewState?.trim().toUpperCase().replaceAll("-", "_");
-  return state === "APPROVED" || state === "CHANGES_REQUESTED";
+  return VERDICTS.has(reviewState?.trim().toUpperCase().replaceAll("-", "_") ?? "");
 }
 
 function eventCount(activity: PullRequestActivity) {

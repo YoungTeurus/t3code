@@ -49,6 +49,7 @@ const CHECK_PRIORITY = {
   failure: 0,
   "action-required": 1,
   pending: 2,
+  queued: 2,
   cancelled: 3,
   neutral: 4,
   skipped: 5,

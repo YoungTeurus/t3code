@@ -378,8 +378,8 @@ export const makeNativeResolver = Effect.gen(function* () {
       canonicalKey,
       locator: { source: "arc", remoteName: remote.name, remoteUrl: remote.url },
       rootPath: detected.repository.rootPath,
-      displayName: "Arcadia",
-      name: "arcadia",
+      displayName: remote.url.endsWith("/cloudia") ? "Cloudia" : "Arcadia",
+      name: remote.url.endsWith("/cloudia") ? "cloudia" : "arcadia",
       ...(provider ? { provider: provider.kind } : {}),
     } satisfies RepositoryIdentity;
   });

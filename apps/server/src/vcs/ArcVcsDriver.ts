@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import { VcsRepositoryDetectionError, VcsUnsupportedOperationError } from "@t3tools/contracts";
 
 import * as ArcCli from "./ArcCli.ts";
+import { makeArcCodeSearch } from "./ArcCodeSearch.ts";
 import * as ArcOperations from "./ArcOperations.ts";
 import type * as VcsDriver from "./VcsDriver.ts";
 import { makeArcCheckpoints } from "../checkpointing/ArcCheckpointStore.ts";
@@ -50,6 +51,7 @@ export const makeArcVcsDriver = Effect.fn("ArcVcsDriver.make")(function* (checkp
   const path = yield* Path.Path;
   const cli = yield* ArcCli.ArcCli;
   const ops = yield* ArcOperations.ArcOperations;
+  const workspaceSearch = yield* makeArcCodeSearch(ops);
   const checkpoints = yield* makeArcCheckpoints(checkpointRoot);
   const workspace = yield* makeArcWorkspaces();
   const backend = yield* makeArcNativeBackend(workspace);
@@ -155,6 +157,7 @@ export const makeArcVcsDriver = Effect.fn("ArcVcsDriver.make")(function* (checkp
   });
   return {
     execute: cli.run,
+    workspaceSearch,
     operations: ops,
     workspace,
     backend,

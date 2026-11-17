@@ -31,6 +31,7 @@ import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "rea
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { pullRequestEnvironment } from "~/state/pullRequests";
+import { useEnvironmentQuery } from "~/state/query";
 import { RelativeTime } from "~/components/RelativeTime";
 
 import { Button } from "../ui/button";
@@ -52,9 +53,11 @@ import {
   type PullRequestTimelineThread,
 } from "./pullRequestDetail.logic";
 import { canEditPullRequestComment } from "@t3tools/client-runtime/pull-request-editing";
+import { nestThreadReplies } from "@t3tools/client-runtime/pull-request-review";
 import { PullRequestMarkdown } from "./PullRequestMarkdown";
 import { PullRequestMoreReplies } from "./PullRequestMoreReplies";
 import { PullRequestMarkdownEditor } from "./PullRequestMarkdownEditor";
+import { PullRequestCommentIssue, PullRequestIssueStateBadge } from "./PullRequestIssueControls";
 import { PullRequestReactionBar } from "./PullRequestReactions";
 import { canReactPullRequestComment } from "@t3tools/client-runtime/pull-request-reactions";
 import { PullRequestResolveThreadButton } from "./PullRequestResolveThreadButton";
@@ -276,9 +279,12 @@ function ConversationCard({
         ? {
             "data-pr-link-target": true,
             tabIndex: -1,
-            className: "group rounded-lg py-2 ring-1 ring-primary/40 outline-none",
+            className: cn(
+              "group rounded-lg py-2 ring-1 ring-primary/40 outline-none",
+              reply && "ml-4 border-l-2 border-border/60 pl-3",
+            ),
           }
-        : { className: "group py-2" })}
+        : { className: cn("group py-2", reply && "ml-4 border-l-2 border-border/60 pl-3") })}
     >
       <div className="px-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -300,6 +306,12 @@ function ConversationCard({
               ) : null}
             </PullRequestMetaLine>
           </div>
+          <PullRequestCommentIssue
+            comment={event.comment}
+            environmentId={reactions.environmentId}
+            reference={reactions.reference}
+            onDone={reactions.onRefresh}
+          />
           {editable !== null && !editing ? (
             <PullRequestEditButton aria-label="Edit comment" onClick={() => setEditing(true)} />
           ) : null}
@@ -365,6 +377,7 @@ function ConversationGroup({
   cwd,
   onOpen,
   reactions,
+  replies,
 }: {
   revealAnchor?: string | null;
   events: ReadonlyArray<PullRequestTimelineEvent>;
@@ -372,6 +385,7 @@ function ConversationGroup({
   cwd: string;
   onOpen: (url: string) => void;
   reactions: ReactionSurface;
+  replies: ReadonlySet<PullRequestTimelineEvent>;
 }) {
   const [open, setOpen] = useState(
     () =>
@@ -427,6 +441,7 @@ function ConversationGroup({
                     cwd={cwd}
                     onOpen={onOpen}
                     reactions={reactions}
+                    reply={replies.has(event)}
                   />
                 ))}
               </div>
@@ -493,7 +508,9 @@ function ReviewThreadEvent({
               </span>
             </>
           )}
-          {thread.isResolved ? (
+          {thread.issueState === "dropped" ? (
+            <PullRequestIssueStateBadge state="dropped" />
+          ) : thread.isResolved ? (
             <span className="inline-flex shrink-0 items-center gap-1 font-medium text-success-foreground">
               <CircleCheckIcon aria-hidden className="size-3" />
               Resolved
@@ -741,6 +758,7 @@ export function PullRequestTimelineTab({
   threadRef = null,
   reference,
   order,
+  active,
   onOpenCommit,
   onAddToChat,
   onRefresh,
@@ -750,6 +768,8 @@ export function PullRequestTimelineTab({
   onRevealSettled?: ((revealUrl: string) => void) | undefined;
   scrollerRef: (node: HTMLElement | null) => void;
   detail: PullRequestDetailView;
+  /** The tab stays mounted while hidden; review events are read only while it shows. */
+  active: boolean;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | null;
   reference: PullRequestRef;
@@ -758,7 +778,18 @@ export function PullRequestTimelineTab({
   onAddToChat?: (subject: PullRequestChatSubject) => void;
   onRefresh: () => void;
 }) {
-  const events = buildPullRequestTimeline(detail);
+  // A host that reports review decisions apart from comments is read for them only here.
+  const reviewEvents =
+    useEnvironmentQuery(
+      active && detail.capabilities.reviewEvents === true
+        ? pullRequestEnvironment.reviewEvents({ environmentId, input: reference })
+        : null,
+    ).data?.events ?? [];
+  const events = buildPullRequestTimeline(
+    reviewEvents.length === 0
+      ? detail
+      : { ...detail, comments: [...detail.comments, ...reviewEvents] },
+  );
   const location = parsePullRequestAnchor(revealUrl);
   const revealAnchor = location?.kind === "timeline" ? location.anchor : null;
   // The linked item stays marked and open after it is shown, until another link replaces it.
@@ -799,7 +830,11 @@ export function PullRequestTimelineTab({
       .map((comment) => [comment.id, comment] as const),
   );
   const orderedEvents = order === "newest" ? events : events.toReversed();
-  const rows = groupPullRequestTimelineConversations(orderedEvents);
+  // Replies to a pull request-level thread follow their root instead of the clock.
+  const nested = nestThreadReplies(orderedEvents, (event) =>
+    event.thread === undefined ? event.comment : undefined,
+  );
+  const rows = groupPullRequestTimelineConversations(nested.items);
   const targetIndex = rows.findIndex((row) =>
     row.kind === "comments" ? row.events.some(matches) : matches(row.event),
   );
@@ -846,6 +881,7 @@ export function PullRequestTimelineTab({
           cwd={detail.workspaceRoot}
           onOpen={openOnHost}
           reactions={reactions}
+          replies={nested.replies}
         />
       );
     }
@@ -901,7 +937,7 @@ export function PullRequestTimelineTab({
         scrollerRef(list?.getScrollableNode() ?? null);
       }}
       data={rows}
-      extraData={{ editable, reactions, newestCommitAt }}
+      extraData={{ editable, reactions, newestCommitAt, replies: nested.replies }}
       keyExtractor={rowKey}
       renderItem={renderRow}
       estimatedItemSize={140}

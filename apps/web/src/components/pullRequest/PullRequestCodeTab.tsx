@@ -138,6 +138,7 @@ import {
   toViewerSide,
 } from "./PullRequestReviewAnnotation";
 import { pullRequestCompletionScope } from "./PullRequestMarkdownTextarea";
+import { PendingReviewIssueToggle } from "./PullRequestIssueControls";
 import { getFileViewedRange, isLineInFileDiff } from "./pullRequestDiff.logic";
 import { PullRequestDiffStat, PullRequestMetaLine } from "./pullRequestPresentation";
 import { PullRequestDiffUnavailableState } from "./PullRequestDiffUnavailableState";
@@ -1306,6 +1307,9 @@ function PullRequestCodeTab({
           key={comment.id}
           comment={comment}
           onRemove={() => removeComment(reviewKey, comment.id)}
+          actions={
+            <PendingReviewIssueToggle detail={detail} reviewKey={reviewKey} comment={comment} />
+          }
         />
       ))}
       {annotation.metadata.draft && draft && canSelectLines ? (

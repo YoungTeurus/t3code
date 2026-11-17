@@ -2252,13 +2252,31 @@ export const make = Effect.gen(function* () {
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository" | "remoteName">,
   ) {
-    if (yield* nativeHandle(cwd)) {
+    const native = yield* nativeHandle(cwd);
+    if (native) {
+      const remotes = yield* native.driver.listRemotes(cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              cwd,
+              operation: "GitManager.resolvePrBase",
+              command: "vcs-list-remotes",
+              detail: "Could not determine the Arc repository.",
+              cause,
+            }),
+        ),
+      );
+      const repository = remotes.remotes.some(
+        (remote) => remote.isPrimary && remote.url.endsWith("/cloudia"),
+      )
+        ? "cloudia"
+        : "arcadia";
       const configured = yield* gitCore.readBranchBase(cwd, branch);
       const baseBranch =
         configured === null || /^[0-9a-f]{40,64}$/i.test(configured)
           ? "trunk"
-          : configured.replace(/^arcadia\//, "");
-      return { baseBranch, baseRef: baseBranch === "trunk" ? "arcadia/trunk" : baseBranch };
+          : configured.replace(/^(?:arcadia|cloudia)\//, "");
+      return { baseBranch, baseRef: baseBranch === "trunk" ? `${repository}/trunk` : baseBranch };
     }
     const configuredRef = yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`);
     if (configuredRef?.startsWith("refs/heads/") || configuredRef?.startsWith("refs/remotes/")) {

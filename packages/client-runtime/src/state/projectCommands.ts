@@ -37,6 +37,9 @@ export type {
   UpdateProjectInput,
 } from "../operations/commands.ts";
 
+/** Searches re-run per keystroke; a superseded one stops, and recent answers stay for reuse. */
+export const PROJECT_SEARCH_SETTLED_CACHE = { ttlMs: 30_000, capacity: 32 } as const;
+
 export type OptimisticProjectFile = {
   readonly data: ProjectReadFileResult;
 } & (
@@ -140,10 +143,15 @@ export function createProjectEnvironmentAtoms<R, E>(
       label: "environment-data:projects:search-entries",
       tag: WS_METHODS.projectsSearchEntries,
       staleTimeMs: 15_000,
+      settledCache: PROJECT_SEARCH_SETTLED_CACHE,
       execute: (input) =>
         fileMetadata.seedAfterRead(
           request(WS_METHODS.projectsSearchEntries, input),
-          (result, isCurrent) => fileMetadata.rememberEntries(input.cwd, result.entries, isCurrent),
+          // A server index describes another tree than the checkout, so its kinds are not facts.
+          (result, isCurrent) =>
+            result.source === undefined
+              ? fileMetadata.rememberEntries(input.cwd, result.entries, isCurrent)
+              : Effect.void,
         ),
     }),
     listEntries: createEnvironmentRpcQueryAtomFamily(runtime, {

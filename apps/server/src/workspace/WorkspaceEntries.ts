@@ -28,6 +28,7 @@ import { normalizeSearchQuery } from "@t3tools/shared/searchRanking";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsDriver from "../vcs/VcsDriver.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
 import * as WorkspaceSearchIndex from "./WorkspaceSearchIndex.ts";
 
@@ -83,6 +84,7 @@ export const WorkspaceEntriesBrowseError = Schema.Union([
 export type WorkspaceEntriesBrowseError = typeof WorkspaceEntriesBrowseError.Type;
 
 export const WorkspaceEntriesError = Schema.Union([
+  VcsDriver.VcsWorkspaceSearchError,
   WorkspaceEntriesReadDirectoryError,
   WorkspacePaths.WorkspaceRootNotExistsError,
   WorkspacePaths.WorkspaceRootCreateFailedError,
@@ -174,6 +176,19 @@ export const make = Effect.gen(function* () {
     cwd: string,
   ): Effect.fn.Return<string, WorkspaceEntriesError> {
     return yield* workspacePaths.normalizeWorkspaceRoot(cwd);
+  });
+  const remoteSearchFor = Effect.fn("WorkspaceEntries.remoteSearchFor")(function* (cwd: string) {
+    return yield* vcsDrivers.detect({ cwd }).pipe(
+      Effect.map((handle) => handle?.driver.workspaceSearch ?? null),
+      Effect.mapError(
+        (cause) =>
+          new VcsDriver.VcsWorkspaceSearchError({
+            cwd,
+            reason: "Could not resolve the project repository.",
+            cause,
+          }),
+      ),
+    );
   });
   const indexedRepository = Effect.fn("WorkspaceEntries.indexedRepository")(function* (
     cwd: string,
@@ -308,6 +323,13 @@ export const make = Effect.gen(function* () {
       const normalizedQuery = normalizeSearchQuery(input.query, {
         trimLeadingPattern: /^[@./]+/,
       });
+      const remote = yield* remoteSearchFor(normalizedCwd);
+      if (remote !== null)
+        return yield* remote.searchEntries({
+          ...input,
+          cwd: normalizedCwd,
+          query: normalizedQuery,
+        });
       const repository = yield* indexedRepository(normalizedCwd);
       const result = yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
@@ -423,6 +445,8 @@ export const make = Effect.gen(function* () {
     "WorkspaceEntries.searchContents",
   )(function* (input) {
     const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
+    const remote = yield* remoteSearchFor(normalizedCwd);
+    if (remote !== null) return yield* remote.searchContents({ ...input, cwd: normalizedCwd });
     const repository = yield* indexedRepository(normalizedCwd);
     return yield* Effect.gen(function* () {
       const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
@@ -639,6 +663,12 @@ export const make = Effect.gen(function* () {
           ),
           truncated: false,
         };
+      }
+      if ((yield* remoteSearchFor(normalizedCwd)) !== null) {
+        return yield* new VcsDriver.VcsWorkspaceSearchError({
+          cwd: normalizedCwd,
+          reason: "Open folders one at a time; this project uses the server search index.",
+        });
       }
       const repository = yield* indexedRepository(normalizedCwd);
       return yield* Effect.gen(function* () {

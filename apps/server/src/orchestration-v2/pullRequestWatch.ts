@@ -32,6 +32,8 @@ export interface PullRequestWatchReport {
 
 const isFailedCheck = (check: PullRequestCheck) =>
   check.status === "failure" || check.status === "cancelled";
+export const isUnfinishedCheck = (check: PullRequestCheck) =>
+  check.status === "pending" || check.status === "queued";
 
 // A GitHub Actions job's URL extends its workflow run's URL; their names need not match.
 const workflowRunOf = (url: string | null) => url?.match(/^.*\/actions\/runs\/\d+/)?.[0] ?? null;
@@ -93,20 +95,20 @@ export function evaluatePullRequestWatch(
       const matching = checks.filter((check) => check.name === name);
       return (
         matching.length === 0 ||
-        matching.some((check) => check.status === "pending" || check.status === "action-required")
+        matching.some((check) => isUnfinishedCheck(check) || check.status === "action-required")
       );
     };
     // GitHub deduplicates jobs across runs, so a visible pending job may hide one in an awaited run.
     // A pending check without a URL could be such a job; one with another host's URL cannot.
     const jobsPending = checks.some(
       (check) =>
-        check.status === "pending" && (check.url === null || workflowRunOf(check.url) !== null),
+        isUnfinishedCheck(check) && (check.url === null || workflowRunOf(check.url) !== null),
     );
     const finished = new Set(
       jobsPending
         ? []
         : checks
-            .filter((check) => check.status !== "action-required" && check.status !== "pending")
+            .filter((check) => check.status !== "action-required" && !isUnfinishedCheck(check))
             .map((check) => workflowRunOf(check.url)),
     );
     awaitingApproval = [
@@ -122,7 +124,7 @@ export function evaluatePullRequestWatch(
   const gate = required.length > 0 ? required : checks;
   const passedNow =
     awaitingApproval.length === 0 &&
-    gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
+    gate.every((check) => !isUnfinishedCheck(check) && !isFailedCheck(check));
   if (checks.length > 0 && !(unread && passedNow)) {
     const gateNames = gate.map((check) => check.name);
     const told = passed && passedChecks.length === 0 ? gateNames : passedChecks;
@@ -139,7 +141,7 @@ export function evaluatePullRequestWatch(
     const settled =
       failed.length === 0 &&
       awaitingApproval.length === 0 &&
-      checks.every((check) => check.status !== "pending");
+      checks.every((check) => !isUnfinishedCheck(check));
     owedChecks = owed;
     if (passedNow && (!passed || gateGrew)) {
       if (!checksBaseline) {
@@ -148,7 +150,7 @@ export function evaluatePullRequestWatch(
       owedChecks =
         required.length > 0
           ? checks
-              .filter((check) => check.required !== true && check.status === "pending")
+              .filter((check) => check.required !== true && isUnfinishedCheck(check))
               .map((check) => check.name)
           : [];
     } else if (settled && owed.length > 0) {

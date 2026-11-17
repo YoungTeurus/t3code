@@ -10,10 +10,12 @@ import { PierreEntryIcon } from "../chat/PierreEntryIcon";
 import { CommandPaletteContent } from "../CommandPaletteContent";
 import { type CommandPaletteActionItem } from "../CommandPalette.logic";
 import { CommandPaletteResults } from "../CommandPaletteResults";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   getProjectFilePickerMatches,
   PROJECT_FILE_PICKER_RESULT_LIMIT,
 } from "./ProjectFilePicker.logic";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { useProjectFilePickerQuery } from "./projectFilesQueryState";
 
 interface ProjectFilePickerProps {
@@ -107,6 +109,7 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
   }));
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);
+  const source = describeSearchSource(result.source);
 
   return (
     <CommandPaletteContent
@@ -114,6 +117,18 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
       autoHighlight="always"
       escapeLabel="Back"
       footerActionLabel="Open file"
+      inputAccessory={
+        source ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={<p className="px-3 py-2 text-xs text-muted-foreground" tabIndex={0} />}
+            >
+              {source.note}
+            </TooltipTrigger>
+            <TooltipPopup>{source.detail}</TooltipPopup>
+          </Tooltip>
+        ) : undefined
+      }
       inputProps={{ placeholder: "Search files…" }}
       mode="none"
       onItemHighlighted={(value) => {

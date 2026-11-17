@@ -234,6 +234,7 @@ export function useProjectFilePickerQuery(
     error: search.error,
     isPending: search.isPending,
     matchedQuery: search.searchedQuery,
+    source: search.isPending ? null : search.source,
   };
 }
 

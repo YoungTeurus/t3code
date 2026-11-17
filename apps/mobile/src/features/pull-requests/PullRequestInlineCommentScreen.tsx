@@ -1,6 +1,7 @@
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
+import { PullRequestIssueToggle } from "./PullRequestIssueControls";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useRef, useState } from "react";
 import { View } from "react-native";
@@ -33,6 +34,8 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
   const saved = store.draft.comments.find((draft) => draft.id === params.draftId);
   const [editedBody, setBody] = useState<string | null>(null);
   const body = editedBody ?? saved?.body ?? "";
+  const [editedIssue, setIssue] = useState<boolean | null>(null);
+  const isIssue = editedIssue ?? saved?.isIssue === true;
   const detail = useEnvironmentQuery(composerPullRequests.detail(pullRequestTarget(params)));
   const { refresh: refreshDetail } = detail;
   const completions = usePullRequestCompletions({
@@ -72,6 +75,7 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
           headSha: params.headSha,
           code: params.code,
           body,
+          ...(isIssue ? { isIssue } : {}),
         },
       ],
     }));
@@ -126,6 +130,12 @@ export function PullRequestInlineCommentScreen({ route }: StaticScreenProps<Inli
         onChangeText={setBody}
         className="min-h-32 rounded-[20px] bg-grouped-card p-4 text-base text-foreground"
         style={{ textAlignVertical: "top" }}
+      />
+      <PullRequestIssueToggle
+        pr={detail.data}
+        value={isIssue}
+        disabled={!store.ready || busy}
+        onValueChange={setIssue}
       />
       <Text className="text-xs text-foreground-muted">
         Saved comments are private until you submit your review.

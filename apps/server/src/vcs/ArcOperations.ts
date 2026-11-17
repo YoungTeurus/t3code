@@ -309,7 +309,7 @@ const make = Effect.gen(function* () {
         isRemote: !b.local,
         ...(!b.local ? { remoteName: "arcadia" } : {}),
         ...(b.remote ? { upstreamRef: b.remote } : {}),
-        isDefault: b.name === "trunk" || b.name === "arcadia/trunk",
+        isDefault: b.name === "trunk" || b.name === `${ctx.repository}/trunk`,
         worktreePath: b.current ? ctx.cwd : null,
       }));
     const cursor = input.cursor ?? 0;
@@ -351,7 +351,7 @@ const make = Effect.gen(function* () {
       });
     }
     if (input.file?.sourceKind !== "working-tree") {
-      const baseRef = input.baseRef ?? "arcadia/trunk";
+      const baseRef = input.baseRef ?? `${ctx.repository}/trunk`;
       if (baseRef.startsWith("-"))
         return yield* new VcsRepositoryDetectionError({
           cwd: input.cwd,

@@ -18,6 +18,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { createCodexAdapterV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import {
   checkCodexProviderStatus,
+  makeCodexWorkspaceWriteNetworkProbe,
   makePendingCodexProvider,
   probeCodexWorkspaceCapabilities,
 } from "../CodexProvider.ts";
@@ -48,6 +49,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     environment: yield* mergeProviderInstanceEnvironment(input.environment),
   });
   const continuationIdentity = codexContinuationIdentity(runtime.homeLayout);
+  const networkProbe = yield* makeCodexWorkspaceWriteNetworkProbe();
   const stamp = withInstanceIdentity({
     instanceId,
     driverKind: DRIVER,
@@ -129,7 +131,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         Effect.gen(function* () {
           const draft = yield* checkCodexProviderStatus(
             effective.config,
-            undefined,
+            networkProbe.probe,
             effective.environment,
             managedAuth,
           );
@@ -247,6 +249,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     models,
     resolveRuntime: runtime.resolve,
+    workspaceWriteNetworkAccess: networkProbe.networkAccess,
   }).pipe(
     Effect.mapError(
       (cause) =>

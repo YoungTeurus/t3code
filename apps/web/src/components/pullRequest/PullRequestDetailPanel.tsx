@@ -5,6 +5,7 @@ import {
   type PullRequestAnchor,
 } from "@t3tools/shared/pullRequestAnchor";
 import { projectChangeRequestUrl } from "@t3tools/client-runtime/change-request-links";
+import { blockingPullRequestChecks } from "@t3tools/client-runtime/pull-request-checks";
 import { normalizeThreadPullRequestKey } from "@t3tools/client-runtime/thread-pull-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { usePullRequestStack } from "~/state/usePullRequestStack";
@@ -112,7 +113,10 @@ import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
 import type { PullRequestAgentSelectionInput } from "./PullRequestCodeTab";
 import { openOnHostLabel } from "./pullRequestLinkContextMenu";
 import { PullRequestMarkdownContext } from "./PullRequestMarkdown";
-import { pullRequestMarkdownPlugins } from "./pullRequestMarkdown.logic";
+import {
+  pullRequestMarkdownPlugins,
+  pullRequestMarkdownSpansAttachments,
+} from "./pullRequestMarkdown.logic";
 import { PullRequestComposer } from "./PullRequestComposer";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab";
@@ -247,6 +251,7 @@ function pullRequestMarkdownContext(
     lineBreaks: sourceControlClients.find(detail?.provider ?? "")?.hardLineBreaks ?? false,
     threadRef,
     repository: detail?.repository ?? null,
+    wholeDocument: pullRequestMarkdownSpansAttachments(detail?.provider ?? ""),
   };
 }
 
@@ -747,7 +752,7 @@ export function PullRequestDetailPanel({
   const pickableEnvironments =
     context === "page"
       ? resolvePickableEnvironments(
-          { environmentId, projectId: reference.projectId },
+          { environmentId, projectId: detail?.projectId ?? reference.projectId },
           projects,
           environments.map((environment) => ({
             environmentId: environment.environmentId,
@@ -1272,7 +1277,9 @@ export function PullRequestDetailPanel({
   // List rollups can omit workflows awaiting approval. Only refreshed detail can clear those.
   const checksState =
     latestChecksState !== "failing" &&
-    detail?.checks.some((check) => check.status === "action-required")
+    blockingPullRequestChecks(detail?.checks ?? []).some(
+      (check) => check.status === "action-required",
+    )
       ? "pending"
       : latestChecksState;
   const checksStale = checksState !== detailChecksState;
@@ -1946,6 +1953,7 @@ export function PullRequestDetailPanel({
                     threadRef={threadRef}
                     reference={reference}
                     order={timelineOrder}
+                    active={tab === "timeline"}
                     onOpenCommit={openCommit}
                     {...(attachTarget === null ? {} : { onAddToChat: addCommentToChat })}
                     onRefresh={refreshDetail}

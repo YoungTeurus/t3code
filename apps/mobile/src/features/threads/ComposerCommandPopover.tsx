@@ -88,6 +88,8 @@ interface ComposerCommandPopoverProps {
   readonly triggerKind: ComposerTriggerKind | null;
   readonly isLoading: boolean;
   readonly error?: string | null;
+  /** Where the results come from, when that is not the checkout itself. */
+  readonly note?: string | null;
   readonly onSelect: (item: ComposerCommandItem) => void;
 }
 
@@ -270,6 +272,11 @@ export const ComposerCommandPopover = memo(function ComposerCommandPopover(
           </Text>
         </View>
       )}
+      {props.note && !props.isLoading ? (
+        <View className="px-3.5 pb-2.5">
+          <Text className="text-xs text-foreground-tertiary">{props.note}</Text>
+        </View>
+      ) : null}
     </PopoverSurface>
   );
 });

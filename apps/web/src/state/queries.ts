@@ -346,6 +346,7 @@ export function useProjectPathSearch(
     searchedTarget: debouncedTarget,
     searchedQuery: debouncedTarget.query ?? "",
     truncated: result.data?.truncated ?? false,
+    source: result.data?.source ?? null,
     refresh: result.refresh,
   };
 }
@@ -428,6 +429,7 @@ export function useProjectContentSearch(target: ProjectContentSearchTarget) {
       (canReadFiles && hasQuery && !queryTooLong && (query !== debouncedQuery || result.isPending)),
     hasQuery,
     truncated: result.data?.truncated ?? false,
+    source: result.data?.source ?? null,
     invalidRegex: target.useRegex && result.data?.regexFallbackError !== undefined,
   };
 }

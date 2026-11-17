@@ -52,6 +52,7 @@ import {
   checkCodexProviderStatus,
   mapCodexModelCapabilities,
   type CodexAppServerProviderSnapshot,
+  makeCodexWorkspaceWriteNetworkProbe,
 } from "./CodexProvider.ts";
 import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
@@ -583,6 +584,10 @@ it.layer(
         const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
           Effect.succeed(
             makeCodexProbeSnapshot({
+              requirements: {
+                allowedApprovalPolicies: ["untrusted", "on-request"],
+                allowedSandboxModes: ["read-only", "workspace-write"],
+              },
               skills: [
                 {
                   name: "github:gh-fix-ci",
@@ -598,6 +603,11 @@ it.layer(
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.installed, true);
         assert.strictEqual(status.version, "1.0.0");
+        assert.deepStrictEqual(status.supportedRuntimeModes, [
+          "approval-required",
+          "auto-accept-edits",
+          "auto",
+        ]);
         assert.strictEqual(status.auth.status, "authenticated");
         assert.strictEqual(status.auth.type, "chatgpt");
         assert.strictEqual(status.auth.label, "ChatGPT Pro 200 Subscription");
@@ -646,6 +656,26 @@ it.layer(
         const status = yield* Fiber.join(fiber);
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "authenticated");
+      }),
+    );
+
+    it.effect("holds a turn's network access read until the first probe answers", () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<void>();
+        const network = yield* makeCodexWorkspaceWriteNetworkProbe(() =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(answer)),
+            Effect.as(makeCodexProbeSnapshot({ workspaceWriteNetworkAccess: true })),
+          ),
+        );
+        yield* Effect.forkChild(checkCodexProviderStatus(defaultCodexSettings, network.probe));
+        yield* Deferred.await(entered);
+        const read = yield* Effect.forkChild(network.networkAccess);
+        yield* TestClock.adjust("1 second");
+        assert.isUndefined(read.pollUnsafe(), "the read must wait for the probe");
+        yield* Deferred.succeed(answer, undefined);
+        assert.isTrue(yield* Fiber.join(read));
       }),
     );
 
@@ -3630,11 +3660,11 @@ it.layer(
       }),
     );
 
-    it.effect(
-      "persists authoritative OpenCode removals without resurrecting them on a failed live refresh",
-      () =>
+    it.effect.each(["opencode", "yaCode"])(
+      "persists authoritative %s removals without resurrecting them on a failed live refresh",
+      (driverName) =>
         Effect.gen(function* () {
-          const openCodeDriver = ProviderDriverKind.make("opencode");
+          const openCodeDriver = ProviderDriverKind.make(driverName);
           const openCodeInstanceId = ProviderInstanceId.make("opencode");
           const initialProvider = {
             instanceId: openCodeInstanceId,
@@ -3683,7 +3713,7 @@ it.layer(
             driverKind: openCodeDriver,
             continuationIdentity: {
               driverKind: openCodeDriver,
-              continuationKey: "opencode:instance:opencode",
+              continuationKey: `${driverName}:instance:opencode`,
             },
             displayName: undefined,
             enabled: true,

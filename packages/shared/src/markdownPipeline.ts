@@ -216,7 +216,12 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "dataInlineCode",
     ],
     blockquote: [...(defaultSchema.attributes?.blockquote ?? []), "dataAlert"],
-    div: [...(defaultSchema.attributes?.div ?? []), ...CODEX_ARTIFACT_TEMPLATE_HAST_PROPERTIES],
+    div: [
+      ...(defaultSchema.attributes?.div ?? []),
+      ...CODEX_ARTIFACT_TEMPLATE_HAST_PROPERTIES,
+      // YFM containers in Arcanum text; the renderer accepts only the values it knows.
+      "dataYfm",
+    ],
     a: [...(defaultSchema.attributes?.a ?? []), "dataPullRequestAutolink"],
     img: [
       ...(defaultSchema.attributes?.img ?? []),
@@ -224,6 +229,8 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "dataLightSrc",
       "dataLocalSrc",
       "dataMarkdownTitle",
+      // Pull request attachments name their media kind; their URL may not.
+      "dataMediaKind",
       "dataStandalone",
     ],
   },

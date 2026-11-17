@@ -1,7 +1,12 @@
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import type {
+  ProjectSearchEntriesInput,
+  ProjectSearchEntriesResult,
+  ProjectSearchContentsInput,
+  ProjectSearchContentsResult,
   VcsError,
   VcsInitInput,
   VcsListRemotesResult,
@@ -70,12 +75,40 @@ export interface VcsCheckpointOps {
   ) => Effect.Effect<void, VcsError>;
 }
 
+export class VcsWorkspaceSearchError extends Schema.TaggedError<VcsWorkspaceSearchError>()(
+  "VcsWorkspaceSearchError",
+  {
+    cwd: Schema.String,
+    /** User-facing and free of queries, payloads, and credentials. */
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Workspace search failed for '${this.cwd}': ${this.reason}`;
+  }
+}
+
+/**
+ * Search answered by a server-side index of the repository instead of a local scan. Results
+ * carry their `source`, and a failure is never answered from the local tree instead.
+ */
+export interface VcsWorkspaceSearch {
+  readonly searchEntries: (
+    input: ProjectSearchEntriesInput,
+  ) => Effect.Effect<ProjectSearchEntriesResult, VcsWorkspaceSearchError>;
+  readonly searchContents: (
+    input: ProjectSearchContentsInput,
+  ) => Effect.Effect<ProjectSearchContentsResult, VcsWorkspaceSearchError>;
+}
+
 export class VcsDriver extends Context.Service<
   VcsDriver,
   {
     readonly execute: (
       input: Omit<VcsProcess.VcsProcessInput, "command">,
     ) => Effect.Effect<VcsProcess.VcsProcessOutput, VcsError>;
+    readonly workspaceSearch?: VcsWorkspaceSearch | null;
     readonly checkpoints: VcsCheckpointOps;
     readonly operations?: VcsRepositoryOperations;
     readonly workspace?: WorkspaceProvider;

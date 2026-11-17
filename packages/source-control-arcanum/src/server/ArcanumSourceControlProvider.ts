@@ -1,354 +1,376 @@
-import { SourceControlProviderError, type ChangeRequest } from "@t3tools/contracts";
+import {
+  SourceControlProviderError,
+  SourceControlProviderKind,
+  type ChangeRequest,
+} from "@t3tools/contracts";
+import {
+  providerAuth,
+  type SourceControlApiDiscoverySpec,
+} from "@t3tools/source-control-core/server/discovery";
+import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
+import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
+import { parseGitRemoteRepository } from "@t3tools/shared/git";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
-import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
-import { sourceBranch } from "@t3tools/source-control-core/server/SourceControlProvider";
-import { definition } from "../shared/definition.ts";
-import * as ArcanumPullRequestApi from "./ArcanumPullRequestApi.ts";
-import * as ArcanumApi from "./ArcanumApi.ts";
 
-const Info = Schema.Struct({
-  hash: Schema.String,
-  branch: Schema.NonEmptyString,
-  remote: Schema.optional(Schema.String),
-  repository: Schema.Literal("arcadia"),
-  user_login: Schema.NonEmptyString,
-});
-const decodeInfo = Schema.decodeEffect(Schema.fromJsonString(Info));
-const Created = Schema.Struct({ id: Schema.Number, url: Schema.String });
-const decodeCreated = Schema.decodeEffect(Schema.fromJsonString(Created));
-const isSourceControlProviderError = Schema.is(SourceControlProviderError);
-const decodeCheckoutStatus = Schema.decodeEffect(
+import {
+  ARC_SERVER_HOSTS,
+  ARCANUM_DEFAULT_REPOSITORY,
+  ARCANUM_WEB_HOST,
+  definition,
+  parseReviewUrl,
+} from "../shared/definition.ts";
+import * as ArcanumApi from "./ArcanumApi.ts";
+import * as Json from "./arcanumJson.ts";
+import * as Reads from "./arcanumReads.ts";
+
+const KIND = SourceControlProviderKind.make("arcanum");
+const CHECKOUT_TIMEOUT_MS = 5 * 60_000;
+const ARC_INFO_TIMEOUT_MS = 15_000;
+const MAX_DESCRIPTION_BYTES = 1024 * 1024;
+
+const decodeArcMountInfo = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ default_branch: Schema.optional(Schema.String) })),
+);
+const decodeArcBranches = Schema.decodeEffect(
   Schema.fromJsonString(
-    Schema.Struct({ status: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)) }),
+    Schema.Array(Schema.Struct({ name: Schema.String, remote: Schema.optional(Schema.String) })),
   ),
 );
+const decodeArcInfo = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ user_login: Schema.optional(Schema.String) })),
+);
+const CreatedPullRequest = Schema.Struct({ id: Schema.Int, url: Schema.optional(Schema.String) });
 
-export const toChangeRequest = (record: {
-  readonly pr: typeof ArcanumPullRequestApi.PullRequest.Type;
-  readonly diff: typeof ArcanumPullRequestApi.Diff.Type;
-}): ChangeRequest => ({
-  provider: definition.kind,
-  number: record.pr.id,
-  title: record.pr.summary,
-  url: record.pr.url,
-  baseRefName: record.pr.vcs.to_branch,
-  headRefName: record.pr.vcs.from_branch,
-  headSha: record.diff.commit_ids.head,
-  state:
-    record.pr.status === "merged"
-      ? "merged"
-      : ["discarded", "no_changes"].includes(record.pr.status)
-        ? "closed"
-        : "open",
-  isDraft: !record.diff.published,
-  closedAt: record.pr.closed_at ?? null,
-  mergedAt: record.pr.status === "merged" ? (record.pr.closed_at ?? null) : null,
-  updatedAt: DateTime.make(record.pr.updated_at),
-  isCrossRepository: false,
-});
+/** The Arc repository a provider context names, or Arcanum's own when it names none. */
+function repositoryOfContext(
+  context: SourceControlProvider.SourceControlProviderContext | undefined,
+): string {
+  const parsed = context === undefined ? null : parseGitRemoteRepository(context.remoteUrl);
+  return parsed !== null && ARC_SERVER_HOSTS.has(parsed.host)
+    ? parsed.path
+    : ARCANUM_DEFAULT_REPOSITORY;
+}
+
+/** A pull request number from `123`, `#123` or a review URL. */
+function referenceNumber(reference: string): number | null {
+  const trimmed = reference.trim();
+  const bare = /^#?(\d{1,12})$/u.exec(trimmed)?.[1];
+  const number = bare === undefined ? parseReviewUrl(trimmed) : Number(bare);
+  return number !== null && Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function toChangeRequest(pull: Json.ReviewRequest): ChangeRequest {
+  const state = Json.pullRequestState(pull.full_status);
+  const closedAt = pull.closed_at ?? null;
+  return {
+    provider: KIND,
+    number: pull.id,
+    title: Json.titleOf(pull),
+    url: pull.url,
+    baseRefName: pull.vcs.to_branch,
+    headRefName: pull.vcs.from_branch,
+    ...(pull.active_diff_set?.arc_branch_heads === undefined
+      ? {}
+      : { headSha: pull.active_diff_set.arc_branch_heads.from_id }),
+    state,
+    isDraft: pull.active_diff_set?.status === "draft" || pull.common_status === "draft",
+    closedAt: state === "open" ? null : closedAt,
+    mergedAt: state === "merged" ? closedAt : null,
+    updatedAt: Option.map(DateTime.make(pull.updated_at), DateTime.toUtc),
+    // Arcanum has no forks: every branch lives in the repository.
+    isCrossRepository: false,
+  };
+}
 
 export const make = Effect.gen(function* () {
-  const client = yield* ArcanumPullRequestApi.ArcanumPullRequestApi;
   const api = yield* ArcanumApi.ArcanumApi;
-  const host = yield* SourceControlHost.SourceControlHost;
-  const fs = yield* FileSystem.FileSystem;
-  const error = (
-    cwd: string,
-    operation: string,
-    detail = "The Arcanum operation could not be completed.",
-  ) => new SourceControlProviderError({ cwd, provider: definition.kind, operation, detail });
-  const io = <A, E, R>(cwd: string, operation: string, effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.mapError(() => error(cwd, operation)));
-  const referenceNumber = (cwd: string, reference: string) => {
-    let number = Number(reference.replace(/^#/u, ""));
-    if (!Number.isSafeInteger(number) || number < 1) {
-      try {
-        number = definition.parseChangeRequestUrl(new URL(reference))?.number ?? 0;
-      } catch {
-        number = 0;
-      }
-    }
-    return Number.isSafeInteger(number) && number > 0
-      ? Effect.succeed(number)
-      : Effect.fail(
-          error(cwd, "reference", "Use an Arcanum PR number or a.yandex-team.ru/review URL."),
-        );
-  };
-  const info = Effect.fn("ArcanumSourceControlProvider.info")(function* (cwd: string) {
-    const output = yield* io(
-      cwd,
-      "info",
-      host.process.run({
+  const { process } = yield* SourceControlHost.SourceControlHost;
+  const fileSystem = yield* FileSystem.FileSystem;
+
+  const failure =
+    (operation: string, cwd: string, extra?: { reference?: string; repository?: string }) =>
+    (cause: { readonly detail?: string; readonly message: string } | string) =>
+      new SourceControlProviderError({
+        provider: KIND,
+        operation,
         cwd,
-        operation: "ArcanumSourceControlProvider.info",
-        command: "arc",
-        args: ["info", "--json"],
-        maxOutputBytes: 65_536,
-        outputMode: "error",
-      }),
-    );
-    return yield* io(cwd, "decodeInfo", decodeInfo(output.stdout));
-  });
-  const getChangeRequest: SourceControlProvider.SourceControlProvider["Service"]["getChangeRequest"] =
-    Effect.fn("ArcanumSourceControlProvider.getChangeRequest")(function* (input) {
-      const number = yield* referenceNumber(input.cwd, input.reference);
-      return toChangeRequest(
-        yield* io(input.cwd, "getChangeRequest", client.read(input.cwd, number, true)),
-      );
-    });
-  const listChangeRequests: SourceControlProvider.SourceControlProvider["Service"]["listChangeRequests"] =
-    Effect.fn("ArcanumSourceControlProvider.listChangeRequests")(function* (input) {
-      const branch = sourceBranch(input);
-      if (!branch || /[\0\r\n]/u.test(branch)) return yield* error(input.cwd, "headSelector");
-      const limit = Math.min(input.limit ?? 20, 100);
-      const requests: ChangeRequest[] = [];
-      let offset = 0;
-      while (requests.length < limit) {
-        const page = yield* io(
-          input.cwd,
-          "listChangeRequests",
-          client.list(input.cwd, {
-            prefix: branch,
-            limit: Math.max(1, limit - requests.length),
-            offset,
-          }),
-        );
-        for (const row of page.pull_requests) {
-          const request = toChangeRequest(
-            yield* io(input.cwd, "readListedChangeRequest", client.read(input.cwd, row.id)),
-          );
-          if (
-            request.headRefName === branch &&
-            (input.state === "all" || request.state === input.state)
-          )
-            requests.push(request);
-        }
-        if (!page.has_next) break;
-        offset += page.pull_requests.length;
-        if (offset > 500 || page.pull_requests.length === 0)
-          return yield* error(
-            input.cwd,
-            "listPagination",
-            "Arcanum could not completely search this branch's pull requests.",
-          );
-      }
-      return requests.slice(0, limit);
-    });
-  const createChangeRequest: SourceControlProvider.SourceControlProvider["Service"]["createChangeRequest"] =
-    Effect.fn("ArcanumSourceControlProvider.createChangeRequest")(function (input) {
-      return api
-        .withVerifiedCredential(input.cwd, ({ viewer }) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const before = yield* info(input.cwd);
-              if (before.user_login !== viewer)
-                return yield* error(
-                  input.cwd,
-                  "accountMismatch",
-                  "The Arcanum account must match the Arc CLI account before creating a PR.",
-                );
-              const branch = sourceBranch(input);
-              if (
-                before.remote !== branch ||
-                input.baseRefName.startsWith("-") ||
-                /[\0\r\n]/u.test(input.baseRefName)
-              )
-                return yield* error(
-                  input.cwd,
-                  "publishIdentity",
-                  "Push the selected Arc branch before creating its Arcanum PR.",
-                );
-              const existing = yield* listChangeRequests({ ...input, state: "open", limit: 2 });
-              if (existing.length > 1) return yield* error(input.cwd, "ambiguousPullRequest");
-              if (existing.length === 1) {
-                if (existing[0]!.headSha !== before.hash)
-                  return yield* error(
-                    input.cwd,
-                    "publishedHead",
-                    "The Arcanum PR has not reached the pushed Arc commit yet.",
-                  );
-                return;
-              }
-              const body = yield* io(input.cwd, "readBody", fs.readFileString(input.bodyFile));
-              const messageFile = yield* io(
-                input.cwd,
-                "messageFile",
-                fs.makeTempFileScoped({ prefix: "t3-arcanum-create-" }),
-              );
-              yield* io(
-                input.cwd,
-                "writeMessage",
-                fs.writeFileString(messageFile, `${input.title}\n\n${body.trimEnd()}\n`, {
-                  mode: 0o600,
-                }),
-              );
-              const result = yield* host.process
-                .run({
-                  cwd: input.cwd,
-                  operation: "ArcanumSourceControlProvider.createChangeRequest",
-                  command: "arc",
-                  args: [
-                    "pr",
-                    "create",
-                    "--json",
-                    "--no-push",
-                    "-F",
-                    messageFile,
-                    "--to",
-                    input.baseRefName,
-                  ],
-                  timeoutMs: 300_000,
-                  maxOutputBytes: 1_048_576,
-                  outputMode: "error",
-                })
-                .pipe(Effect.result);
-              const after = yield* info(input.cwd);
-              if (
-                after.hash !== before.hash ||
-                after.branch !== before.branch ||
-                after.remote !== before.remote
-              )
-                return yield* error(
-                  input.cwd,
-                  "checkoutChanged",
-                  "The Arc checkout changed while its PR was being created.",
-                );
-              if (result._tag === "Success") {
-                const created = yield* io(
-                  input.cwd,
-                  "decodeCreated",
-                  decodeCreated(result.success.stdout),
-                );
-                const readback = yield* getChangeRequest({
-                  cwd: input.cwd,
-                  reference: String(created.id),
-                });
-                if (readback.headSha !== before.hash || readback.headRefName !== branch)
-                  return yield* error(input.cwd, "createReadback");
-                return;
-              }
-              const readback = yield* listChangeRequests({ ...input, state: "open", limit: 2 });
-              if (readback.length !== 1 || readback[0]!.headSha !== before.hash)
-                return yield* error(
-                  input.cwd,
-                  "createOutcomeUnknown",
-                  "The PR creation response was lost and its outcome could not be verified. Refresh Arcanum before trying again.",
-                );
-            }),
-          ),
-        )
-        .pipe(
-          Effect.mapError((cause) =>
-            isSourceControlProviderError(cause) ? cause : error(input.cwd, "verifyAccount"),
-          ),
-        );
-    });
-  return SourceControlProvider.SourceControlProvider.of({
-    kind: definition.kind,
-    headBranchProbe: ({ headSelectors }) => ({ headSelectors, limit: 20 }),
-    listChangeRequests,
-    getChangeRequest,
-    createChangeRequest,
-    getDefaultBranch: Effect.fn("ArcanumSourceControlProvider.getDefaultBranch")(() =>
-      Effect.succeed("trunk"),
-    ),
-    getRepositoryCloneUrls: Effect.fn("ArcanumSourceControlProvider.getRepositoryCloneUrls")(
-      (input) =>
-        Effect.fail(
-          error(input.cwd, "clone", "Open an existing Arc checkout or create an Arc workspace."),
-        ),
-    ),
-    createRepository: Effect.fn("ArcanumSourceControlProvider.createRepository")((input) =>
-      Effect.fail(
-        error(input.cwd, "createRepository", "Arcanum uses the existing Arcadia monorepository."),
-      ),
-    ),
-    checkoutChangeRequest: Effect.fn("ArcanumSourceControlProvider.checkoutChangeRequest")(
-      function* (input) {
-        if (input.force)
-          return yield* error(
-            input.cwd,
-            "forceCheckout",
-            "Arc PR checkout preserves local commits and changes.",
-          );
-        const pr = yield* getChangeRequest(input);
-        if (!pr.headSha) return yield* error(input.cwd, "missingHead");
-        const branch = `t3/pr-${pr.number}`;
-        const bindUpstream = io(
-          input.cwd,
-          "prUpstream",
-          host.git.setBranchUpstream({
-            cwd: input.cwd,
-            branch,
-            remoteName: "arcadia",
-            remoteBranch: pr.headRefName,
-          }),
-        );
-        const before = yield* info(input.cwd);
-        if (before.branch === branch) return yield* bindUpstream;
-        const root = yield* io(
-          input.cwd,
-          "root",
-          host.process.run({
-            cwd: input.cwd,
-            operation: "ArcanumSourceControlProvider.root",
-            command: "arc",
-            args: ["root"],
-            maxOutputBytes: 65_536,
-            outputMode: "error",
-          }),
-        );
-        if (!root.stdout.trim()) return yield* error(input.cwd, "root");
-        const output = yield* io(
-          input.cwd,
-          "status",
-          host.process.run({
-            cwd: root.stdout.trim(),
-            operation: "ArcanumSourceControlProvider.status",
-            command: "arc",
-            args: [
-              "status",
-              "--json",
-              "-u",
-              "all",
-              "--no-ahead-behind",
-              "--no-sync-status",
-              "--no-bisect-status",
-            ],
-            outputMode: "error",
-          }),
-        );
-        const status = yield* io(input.cwd, "decodeStatus", decodeCheckoutStatus(output.stdout));
-        if (Object.values(status.status).some((changes) => changes.length > 0))
-          return yield* error(
-            input.cwd,
-            "dirtyCheckout",
-            "Commit current Arc changes or open this PR in a workspace.",
-          );
-        const names = yield* io(input.cwd, "branches", host.git.listLocalBranchNames(input.cwd));
-        if (!names.includes(branch))
-          yield* io(
-            input.cwd,
-            "createBranch",
-            host.git.createBranch({ cwd: input.cwd, branch, startPoint: pr.headSha }),
-          );
-        yield* io(input.cwd, "switchRef", host.git.switchRef({ cwd: input.cwd, refName: branch }));
-        yield* bindUpstream;
-      },
-    ),
-    resolveLink: (input) =>
-      definition.parseChangeRequestUrl(input.url) === null
-        ? undefined
-        : getChangeRequest({ cwd: input.cwd, reference: input.url.toString() }).pipe(
-            Effect.flatMap((pr) =>
-              io(input.cwd, "resolveLink", client.read(input.cwd, pr.number)).pipe(
-                Effect.map((record) => ({ title: record.pr.summary, body: record.pr.description })),
+        ...(extra?.reference === undefined
+          ? {}
+          : {
+              reference: SourceControlProvider.transportSafeSourceControlErrorValue(
+                extra.reference,
               ),
+            }),
+        ...(extra?.repository === undefined ? {} : { repository: extra.repository }),
+        detail: typeof cause === "string" ? cause : (cause.detail ?? cause.message),
+        ...(typeof cause === "string" ? {} : { cause }),
+      });
+
+  const readPull = (operation: string, cwd: string, number: number, repository: string) =>
+    Reads.readReviewRequest(api, operation, number).pipe(
+      Effect.tap((pull) => Reads.assertRepository(operation, pull, repository)),
+      Effect.mapError(failure(operation, cwd, { reference: String(number) })),
+    );
+
+  const runArcJson = <A>(
+    operation: string,
+    cwd: string,
+    args: ReadonlyArray<string>,
+    decode: (text: string) => Effect.Effect<A, Schema.SchemaError>,
+  ) =>
+    process
+      .run({
+        operation: `ArcanumSourceControlProvider.${operation}`,
+        command: "arc",
+        args,
+        cwd,
+        timeoutMs: ARC_INFO_TIMEOUT_MS,
+        maxOutputBytes: 8 * 1024 * 1024,
+        outputMode: "error",
+      })
+      .pipe(
+        Effect.mapError(failure(operation, cwd)),
+        Effect.flatMap((output) =>
+          decode(output.stdout).pipe(
+            Effect.mapError(() =>
+              failure(
+                operation,
+                cwd,
+              )(`Arc printed \`arc ${args[0]}\` output this version cannot read.`),
             ),
           ),
+        ),
+      );
+
+  /**
+   * The Arc server branch a branch name means. A local branch that tracks one means that one. A
+   * local branch that does not is where Arc would push it, `users/<Arc login>/<name>`, as the Arc
+   * driver pushes. Any other name already is a server branch, such as the upstream the caller read.
+   */
+  const serverBranchOf = Effect.fn("ArcanumSourceControlProvider.serverBranchOf")(function* (
+    operation: string,
+    cwd: string,
+    repository: string,
+    branch: string,
+  ) {
+    const name = branch.trim().replace(/^refs\/heads\//u, "");
+    if (name.length === 0) {
+      return yield* failure(operation, cwd)("No branch to look a pull request up by.");
+    }
+    // Without `-v` Arc leaves out each branch's upstream, `remote`.
+    const branches = yield* runArcJson(
+      operation,
+      cwd,
+      ["branch", "--json", "-v"],
+      decodeArcBranches,
+    );
+    const local = branches.find((entry) => entry.name === name);
+    if (local === undefined) return name;
+    const remote = local.remote?.trim();
+    if (remote) {
+      return remote.startsWith(`${repository}/`) ? remote.slice(repository.length + 1) : remote;
+    }
+    const info = yield* runArcJson(operation, cwd, ["info", "--json"], decodeArcInfo);
+    const login = info.user_login?.trim();
+    if (!login) {
+      return yield* failure(operation, cwd)("Arc did not report the signed-in user.");
+    }
+    return name.startsWith(`users/${login}/`) ? name : `users/${login}/${name}`;
   });
+
+  // The pin the pull request provider uses too: both read through one ArcanumApi.
+  const withCredential: SourceControlProvider.SourceControlProvider["Service"]["withCredential"] = (
+    _input,
+    use,
+  ) => api.withCredential(use);
+
+  const unsupported = (operation: string, cwd: string, repository: string) =>
+    Effect.fail(
+      failure(operation, cwd, { repository })(
+        "Arc repositories are mounted with `arc mount`; T3 cannot clone or create them.",
+      ),
+    );
+
+  return SourceControlProvider.SourceControlProvider.of({
+    kind: KIND,
+    withCredential,
+    // Arcanum keys pull requests by full Arc branch, never by an `owner:branch` fork selector.
+    headBranchProbe: ({ headSelectors }) => ({
+      headSelectors: headSelectors.filter(
+        (selector) => SourceControlProvider.parseSourceControlOwnerRef(selector) === undefined,
+      ),
+      limit: 1,
+    }),
+    resolveLink: ({ cwd, url }) => {
+      const number = parseReviewUrl(url.href);
+      if (number === null) return undefined;
+      return Reads.readReviewRequest(api, "resolveLink", number).pipe(
+        Effect.map((pull) => ({ title: Json.titleOf(pull), body: pull.description ?? null })),
+        Effect.mapError(failure("resolveLink", cwd, { reference: url.href })),
+      );
+    },
+    listChangeRequests: Effect.fn("ArcanumSourceControlProvider.listChangeRequests")(
+      function* (input) {
+        const operation = "listChangeRequests";
+        const repository = repositoryOfContext(input.context);
+        const branch = SourceControlProvider.sourceBranch(input);
+        if (branch.length === 0) return [];
+        const serverBranch = yield* serverBranchOf(operation, input.cwd, repository, branch);
+        const number = yield* Reads.latestFromBranch(api, operation, {
+          branch: serverBranch,
+          repository,
+        }).pipe(Effect.mapError(failure(operation, input.cwd, { reference: branch })));
+        if (number === null) return [];
+        const changeRequest = toChangeRequest(
+          yield* readPull(operation, input.cwd, number, repository),
+        );
+        return input.state === "all" || changeRequest.state === input.state ? [changeRequest] : [];
+      },
+    ),
+    getChangeRequest: Effect.fn("ArcanumSourceControlProvider.getChangeRequest")(function* (input) {
+      const number = referenceNumber(input.reference);
+      if (number === null) {
+        return yield* failure("getChangeRequest", input.cwd, { reference: input.reference })(
+          "Arcanum pull requests are numbers or review URLs.",
+        );
+      }
+      return toChangeRequest(
+        yield* readPull("getChangeRequest", input.cwd, number, repositoryOfContext(input.context)),
+      );
+    }),
+    createChangeRequest: Effect.fn("ArcanumSourceControlProvider.createChangeRequest")(
+      function* (input) {
+        const operation = "createChangeRequest";
+        const repository = repositoryOfContext(input.context);
+        const fail = failure(operation, input.cwd, { reference: input.headSelector, repository });
+        const description = yield* fileSystem
+          .readFileString(input.bodyFile)
+          .pipe(Effect.mapError(() => fail("Could not read the pull request description.")));
+        if (new TextEncoder().encode(description).byteLength > MAX_DESCRIPTION_BYTES) {
+          return yield* fail("The pull request description is too long for Arcanum.");
+        }
+        const serverBranch = yield* serverBranchOf(
+          operation,
+          input.cwd,
+          repository,
+          SourceControlProvider.sourceBranch(input),
+        );
+        const created = yield* api
+          .request({
+            operation,
+            method: "POST",
+            path: "/v1/pull-requests",
+            query: { fields: "id,url" },
+            body: {
+              vcs: {
+                arc_repo_name: repository,
+                from_branch: serverBranch,
+                to_branch: input.target?.refName ?? input.baseRefName,
+              },
+              summary: input.title,
+              description,
+            },
+          })
+          .pipe(
+            Effect.flatMap(Reads.decodeData(operation, CreatedPullRequest)),
+            Effect.mapError((error) =>
+              fail(
+                error.status === 409
+                  ? "An open pull request from this branch already exists in Arcanum."
+                  : error.outcomeUnknown
+                    ? `${error.detail} Check Arcanum before creating it again.`
+                    : error,
+              ),
+            ),
+          );
+        // Arcanum's answer names the pull request, so nothing has to look it up again.
+        const url =
+          created.url ??
+          definition.changeRequestUrl({ host: ARCANUM_WEB_HOST, repository, number: created.id });
+        return url === null ? undefined : { number: created.id, url };
+      },
+    ),
+    getRepositoryCloneUrls: Effect.fn("ArcanumSourceControlProvider.getRepositoryCloneUrls")(
+      function* (input) {
+        return yield* unsupported("getRepositoryCloneUrls", input.cwd, input.repository);
+      },
+    ),
+    createRepository: Effect.fn("ArcanumSourceControlProvider.createRepository")(function* (input) {
+      return yield* unsupported("createRepository", input.cwd, input.repository);
+    }),
+    getDefaultBranch: Effect.fn("ArcanumSourceControlProvider.getDefaultBranch")(function* (input) {
+      const operation = "getDefaultBranch";
+      const output = yield* process
+        .run({
+          operation: "ArcanumSourceControlProvider.getDefaultBranch",
+          command: "arc",
+          args: ["info", "--mount", "--json"],
+          cwd: input.cwd,
+          timeoutMs: ARC_INFO_TIMEOUT_MS,
+          maxOutputBytes: 1024 * 1024,
+        })
+        .pipe(Effect.mapError(failure(operation, input.cwd)));
+      const info = yield* decodeArcMountInfo(output.stdout).pipe(
+        Effect.mapError(() =>
+          failure(operation, input.cwd)("Arc printed mount info this version cannot read."),
+        ),
+      );
+      return info.default_branch?.trim() || null;
+    }),
+    checkoutChangeRequest: Effect.fn("ArcanumSourceControlProvider.checkoutChangeRequest")(
+      function* (input) {
+        const operation = "checkoutChangeRequest";
+        const number = referenceNumber(input.reference);
+        if (number === null) {
+          return yield* failure(operation, input.cwd, { reference: input.reference })(
+            "Arcanum pull requests are numbers or review URLs.",
+          );
+        }
+        // `arc pr checkout` switches to a local branch tracking the pull request's own: the
+        // branch name without `users/<you>/` for your own pull request, the full name otherwise.
+        yield* process
+          .run({
+            operation: "ArcanumSourceControlProvider.checkoutChangeRequest",
+            command: "arc",
+            args: ["pr", "checkout", ...(input.force === true ? ["--force"] : []), String(number)],
+            cwd: input.cwd,
+            timeoutMs: CHECKOUT_TIMEOUT_MS,
+            maxOutputBytes: 1024 * 1024,
+          })
+          .pipe(Effect.mapError(failure(operation, input.cwd, { reference: String(number) })));
+      },
+    ),
+  });
+});
+
+export const makeDiscovery = Effect.gen(function* () {
+  const api = yield* ArcanumApi.ArcanumApi;
+  return {
+    type: "api",
+    kind: KIND,
+    label: "Arcanum",
+    installHint:
+      "Save an Arcanum token in Settings → Source control, set ARC_TOKEN on the server, or sign Arc in so `arc token show` works.",
+    probeAuth: api.identity("discovery").pipe(
+      Effect.map(({ login }) =>
+        providerAuth({ status: "authenticated", account: login, host: ARCANUM_WEB_HOST }),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          providerAuth({
+            status:
+              error.reason === "missing-tool" || error.reason === "unauthenticated"
+                ? "unauthenticated"
+                : "unknown",
+            host: ARCANUM_WEB_HOST,
+            detail: error.detail,
+          }),
+        ),
+      ),
+    ),
+  } satisfies SourceControlApiDiscoverySpec;
 });

@@ -25,6 +25,8 @@ export const PullRequestMarkdownContext = createContext<{
   threadRef: ScopedThreadRef | null;
   /** The change request's `owner/name`, which can differ from the checkout the body renders in. */
   repository: string | null;
+  /** The plugins render attachments in place, so the body is not cut around them. */
+  wholeDocument?: boolean;
 } | null>(null);
 
 function PullRequestHostVideo({
@@ -197,8 +199,10 @@ export function PullRequestMarkdown({
   /** `markerOffset` is into `text`. Checkboxes stay read-only without it. */
   onTaskListChange?: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
 }) {
-  const segments = splitPullRequestBody(text);
   const context = useContext(PullRequestMarkdownContext);
+  const segments: ReadonlyArray<PullRequestBodySegment> = context?.wholeDocument
+    ? [{ id: "markdown:0", kind: "markdown", text, sourceOffset: 0 }]
+    : splitPullRequestBody(text);
   const resolvedThreadRef = threadRef ?? context?.threadRef ?? undefined;
   return (
     <div

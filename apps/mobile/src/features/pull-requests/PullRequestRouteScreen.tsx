@@ -125,6 +125,7 @@ import {
   PullRequestBranchRow,
   PullRequestReviewersRow,
 } from "./PullRequestStatusRows";
+import { PullRequestReviewStatusRow } from "./PullRequestReviewStatusRow";
 import { PullRequestMergeControls } from "./PullRequestMergeControls";
 import { PullRequestStackCard } from "./PullRequestStackCard";
 import { usePullRequestStack, type PullRequestStackState } from "./usePullRequestStack";
@@ -135,12 +136,27 @@ import {
   sourceControlClients,
 } from "@t3tools/client-runtime/source-control-clients";
 
-function usePullRequestActivityRows(params: PullRequestParams, filter: ActivityFilter) {
+function usePullRequestActivityRows(
+  params: PullRequestParams,
+  filter: ActivityFilter,
+  timelineShown: boolean,
+) {
   const navigation = useNavigation();
   const result = useEnvironmentQuery(composerPullRequests.activity(requestTarget(params)));
   const detail = useEnvironmentQuery(composerPullRequests.detail(requestTarget(params)));
+  // A host that reports review decisions apart from comments is read for them while Activity shows.
+  const reviewEvents =
+    useEnvironmentQuery(
+      timelineShown && detail.data?.capabilities.reviewEvents === true
+        ? composerPullRequests.reviewEvents(requestTarget(params))
+        : null,
+    ).data?.events ?? [];
   const permissions = usePullRequestPermissions(params, detail.data);
-  const filtered = result.data ? filterPullRequestActivity(result.data, filter) : null;
+  const activity =
+    result.data && reviewEvents.length > 0
+      ? { ...result.data, comments: [...result.data.comments, ...reviewEvents] }
+      : result.data;
+  const filtered = activity ? filterPullRequestActivity(activity, filter) : null;
   const rows = (() => {
     if (!filtered) return [];
     const rows = pullRequestTimelineRows(
@@ -327,6 +343,7 @@ function PullRequestOverview(props: {
       <PullRequestCardGroup>
         <PullRequestChecksRow pr={pr} params={props.params} />
         <PullRequestReviewersRow pr={pr} params={props.params} />
+        <PullRequestReviewStatusRow pr={pr} />
         <Animated.View layout={PR_ROW_LAYOUT}>
           <PullRequestBranchRow pr={pr} params={props.params} />
         </Animated.View>
@@ -385,7 +402,11 @@ export function PullRequestRouteScreen({ route }: StaticScreenProps<PullRequestP
   const section = shown(chosenSection);
   const activity = usePullRequestActivityFilter(parsePullRequestAnchor(params.navigationUrl)?.kind);
   const activityFilter = activity.filter;
-  const activityContent = usePullRequestActivityRows(params, activityFilter);
+  const activityContent = usePullRequestActivityRows(
+    params,
+    activityFilter,
+    section === "activity",
+  );
   const scrollOffsets = useRef<Record<string, number>>({});
   // The offset of the tab last shown, and which tab that was: a tab standing in for a hidden guide
   // has its own offset, which only its next scroll would record here.

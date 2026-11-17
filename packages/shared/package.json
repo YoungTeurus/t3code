@@ -235,6 +235,10 @@
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"
     },
+    "./searchSource": {
+      "types": "./src/searchSource.ts",
+      "import": "./src/searchSource.ts"
+    },
     "./qrCode": {
       "types": "./src/qrCode.ts",
       "import": "./src/qrCode.ts"

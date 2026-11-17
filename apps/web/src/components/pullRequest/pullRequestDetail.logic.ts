@@ -7,6 +7,7 @@ import {
 import { stripInlineContextReferences } from "~/lib/composerContextReferences";
 import type { Nodes as MdastNodes } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { blockingPullRequestChecks } from "@t3tools/client-runtime/pull-request-checks";
 import {
   capitalizeTerm,
   sourceControlClients,
@@ -318,28 +319,32 @@ export function isPullRequestConflicting(
 export type PullRequestChecksState = "none" | "pending" | "failing" | "passing";
 
 export function classifyPullRequestChecks(
-  checks: ReadonlyArray<PullRequestCheck>,
+  allChecks: ReadonlyArray<PullRequestCheck>,
 ): PullRequestChecksState {
+  const checks = blockingPullRequestChecks(allChecks);
   if (checks.length === 0) return "none";
   if (checks.some((check) => check.status === "failure" || check.status === "cancelled")) {
     return "failing";
   }
-  if (checks.some((check) => check.status === "pending" || check.status === "action-required")) {
+  if (checks.some((check) => ["pending", "queued", "action-required"].includes(check.status))) {
     return "pending";
   }
   return "passing";
 }
 
-export function describePullRequestChecks(checks: ReadonlyArray<PullRequestCheck>): string {
+export function describePullRequestChecks(allChecks: ReadonlyArray<PullRequestCheck>): string {
+  const checks = blockingPullRequestChecks(allChecks);
   if (checks.length === 0) return "No checks reported";
   const failed = checks.filter(
     (check) => check.status === "failure" || check.status === "cancelled",
   ).length;
   const pending = checks.filter((check) => check.status === "pending").length;
+  const queued = checks.filter((check) => check.status === "queued").length;
   const actionRequired = checks.filter((check) => check.status === "action-required").length;
   const passed = checks.filter((check) => check.status === "success").length;
   const parts: string[] = [];
   if (pending > 0) parts.push(`${pending} of ${checks.length} running`);
+  if (queued > 0) parts.push(`${queued} of ${checks.length} queued`);
   if (actionRequired > 0) parts.push(`${actionRequired} of ${checks.length} awaiting action`);
   if (failed > 0) {
     parts.push(parts.length > 0 ? `${failed} failed` : `${failed} of ${checks.length} failing`);
@@ -350,13 +355,20 @@ export function describePullRequestChecks(checks: ReadonlyArray<PullRequestCheck
   return parts.join(" · ");
 }
 
+/** Checks merging does not wait on fold in with the completed ones, whatever their status. */
 export function groupPullRequestChecks(checks: ReadonlyArray<PullRequestCheck>) {
+  const blocking = new Set(blockingPullRequestChecks(checks));
+  const attention = checks.filter(
+    (check) =>
+      blocking.has(check) && ["failure", "cancelled", "action-required"].includes(check.status),
+  );
+  const running = checks.filter(
+    (check) => blocking.has(check) && (check.status === "pending" || check.status === "queued"),
+  );
   return {
-    attention: checks.filter((check) =>
-      ["failure", "cancelled", "action-required"].includes(check.status),
-    ),
-    running: checks.filter((check) => check.status === "pending"),
-    completed: checks.filter((check) => ["success", "skipped", "neutral"].includes(check.status)),
+    attention,
+    running,
+    completed: checks.filter((check) => !attention.includes(check) && !running.includes(check)),
   };
 }
 
@@ -491,7 +503,7 @@ export interface PullRequestTimelineThread
   extends
     Pick<
       PullRequestConversationThread,
-      "id" | "path" | "line" | "isResolved" | "isOutdated" | "canResolve"
+      "id" | "path" | "line" | "isResolved" | "isOutdated" | "canResolve" | "issueState"
     >,
     PullRequestReplyAvailability {
   readonly replies: ReadonlyArray<PullRequestTimelineEvent>;
@@ -840,6 +852,7 @@ export function buildPullRequestTimeline(
           line: item.thread.line,
           isResolved: item.thread.isResolved,
           isOutdated: item.thread.isOutdated,
+          ...(item.thread.issueState === undefined ? {} : { issueState: item.thread.issueState }),
           replies: item.replies.map(commentTimelineEvent),
           moreReplies: item.moreReplies,
           hasMoreReplies: item.hasMoreReplies,

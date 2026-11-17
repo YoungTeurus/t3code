@@ -75,6 +75,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import React, {
+  Children,
   Suspense,
   type ComponentProps,
   type ClipboardEvent as ReactClipboardEvent,
@@ -204,6 +205,7 @@ import { splitMarkdownBlocks } from "./chat/markdownStreamBlocks";
 import { MarkdownMermaidCodeBlock } from "./chat/MarkdownMermaidCodeBlock";
 import { MarkdownTable } from "./chat/MarkdownTable";
 import { MarkdownDetails } from "./chat/MarkdownDetails";
+import { isYfmNoteTitle, MarkdownYfmBlock } from "./chat/MarkdownYfm";
 import {
   authoredImageSizeStyle,
   ChatMarkdownAssetImage,
@@ -1061,6 +1063,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
         <CodexArtifactTemplateCard template={artifactTemplate} onUse={onUseArtifactTemplate} />
       );
     }
+    const yfm = (props as Record<string, unknown>)["data-yfm"];
+    if (typeof yfm === "string") return <MarkdownYfmBlock spec={yfm}>{children}</MarkdownYfmBlock>;
     return <div {...props}>{children}</div>;
   },
   p: function MarkdownParagraph({ node: _node, children, ...props }) {
@@ -1077,6 +1081,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
     if (!alert) {
       return <blockquote {...props}>{children}</blockquote>;
     }
+    const content = Children.toArray(children);
+    const title = content.find(isYfmNoteTitle);
     return (
       <div
         role="note"
@@ -1085,14 +1091,14 @@ const CHAT_MARKDOWN_COMPONENTS = {
         className={cn("my-1 border-s-2 ps-3", alert.borderClassName)}
       >
         <p
-          data-thread-find-ignore="true"
+          data-thread-find-ignore={title ? undefined : "true"}
           data-markdown-alert-label=""
           className={cn("flex items-center gap-1.5 font-medium", alert.titleClassName)}
         >
           <alert.Icon aria-hidden className="size-3.5 shrink-0" />
-          {alert.label}
+          {title ? title.props.children : alert.label}
         </p>
-        {children}
+        {title ? content.filter((child) => child !== title) : children}
       </div>
     );
   },
@@ -1506,7 +1512,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const { className, style: _style, width, height, ...imageProps } = props;
     const authoredSizeStyle = authoredImageSizeStyle(width, height);
     const imageSource = classifyMarkdownImageSource(classifiedSrc, imageBaseDir ?? cwd);
-    const mediaKind = mediaKindFromPath(classifiedSrc);
+    const mediaKind =
+      node?.properties?.dataMediaKind === "video" ? "video" : mediaKindFromPath(classifiedSrc);
     if (mediaKind === "audio") {
       const filePath = imageSource._tag === "WorkspaceFile" ? imageSource.path : null;
       const name =
@@ -1663,9 +1670,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
   table: function MarkdownTableRenderer({ node: _node, ...props }) {
     return <MarkdownTable {...props} />;
   },
-  details: function MarkdownDetailsRenderer({ node: _node, children, open: detailsOpen, dir }) {
+  details: function MarkdownDetailsRenderer({ node: _node, children, open: detailsOpen, dir, id }) {
     return (
-      <MarkdownDetails open={detailsOpen} dir={dir}>
+      <MarkdownDetails open={detailsOpen} dir={dir} id={id}>
         {children}
       </MarkdownDetails>
     );

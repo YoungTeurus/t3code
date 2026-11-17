@@ -38,6 +38,7 @@ import {
 import { buildFileTreePathUpdates, shouldRebuildFileTree } from "./fileTreePathReconciliation";
 import { loadFileAncestors } from "./loadFileAncestors";
 import { useDirectoryEntries } from "./useDirectoryEntries";
+import { describeSearchSource } from "@t3tools/shared/searchSource";
 import { useProjectPathSearch } from "~/state/queries";
 import { isMacPlatform } from "~/lib/utils";
 import { type PreviewAction, subscribePreviewAction } from "../preview/previewActionBus";
@@ -171,6 +172,7 @@ export default function FileBrowserPanel({
     error,
     isPending,
     loadingDirectories,
+    wholeTreeExpansion,
   } = useDirectoryEntries(environmentId, cwd);
   const [query, setQuery] = useState("");
   const [expandAll, setExpandAll] = useState(false);
@@ -178,6 +180,7 @@ export default function FileBrowserPanel({
     { environmentId, cwd: hostFolder ? null : cwd, query: query.slice(0, 256) },
     200,
   );
+  const pathSearchSource = describeSearchSource(pathSearch.source);
   const { entries, entryKinds, treePaths, directoryPaths, expandableDirectoryPaths } =
     buildTreeEntries(directoryEntries, pathSearch.entries, pathSearch.isPending, query);
   const entryKindsRef = useRef(entryKinds);
@@ -451,9 +454,9 @@ export default function FileBrowserPanel({
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- expands every directory in the Pierre tree model while expand-all is on and no search is active
   useEffect(() => {
-    if (expandAll && !query.trim())
+    if (expandAll && wholeTreeExpansion && !query.trim())
       setAllDirectoriesExpanded(model, expandableDirectoryPaths, true);
-  }, [expandableDirectoryPaths, expandAll, model, query]);
+  }, [expandableDirectoryPaths, expandAll, model, query, wholeTreeExpansion]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reveals an externally selected path in the Pierre tree model by expanding, selecting and scrolling
   useEffect(() => {
@@ -550,7 +553,7 @@ export default function FileBrowserPanel({
           onValueChange={handleSearchValueChange}
           onClose={closeSearch}
         />
-        {directoryPaths.length > 0 && !hostFolder ? (
+        {directoryPaths.length > 0 && !hostFolder && wholeTreeExpansion ? (
           <Tooltip>
             <TooltipTrigger
               render={
@@ -587,6 +590,9 @@ export default function FileBrowserPanel({
         >
           {error ?? pathSearch.error} Click to retry.
         </button>
+      ) : null}
+      {query.trim() && pathSearchSource && !pathSearch.isPending ? (
+        <div className="px-3 py-1 text-xs text-muted-foreground">{pathSearchSource.note}</div>
       ) : null}
       {query.trim() && pathSearch.truncated && !pathSearch.isPending ? (
         <div className="px-3 py-1 text-xs text-muted-foreground">
