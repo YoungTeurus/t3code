@@ -1914,8 +1914,10 @@ it.effect("cancel ends the task here even when the link is gone", () =>
       yield* seedParent(a);
 
       yield* Ref.set(thread.holdRead, true);
-      const delegated = yield* delegateToBox(a);
+      const pending = yield* delegateToBox(a).pipe(Effect.forkChild);
       yield* Deferred.await(thread.readStarted);
+      yield* Deferred.succeed(thread.releaseRead, undefined);
+      const delegated = yield* Fiber.join(pending);
       yield* a.links.unlink(box.environmentId);
       const cancel = yield* a.call("task_cancel", { taskId: delegated.taskId });
       expect(cancel.structuredContent).toEqual({
