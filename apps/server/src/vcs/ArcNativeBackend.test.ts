@@ -89,6 +89,7 @@ describe("Arc native workflow backend", () => {
         assert.deepEqual(yield* backend.resolvePushTarget!(root), {
           remoteName: "arcadia",
           branchName: "users/test/task",
+          viaPushRemote: false,
         });
         const remote = yield* backend.statusDetailsRemote!(root, { refreshUpstream: false });
         assert.equal(

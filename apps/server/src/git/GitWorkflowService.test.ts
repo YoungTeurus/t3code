@@ -102,6 +102,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
           ),
         ),
       );
+      assert.isNull(yield* workflow.readRefSnapshot(cwd));
       assert.isTrue(yield* workflow.hasCommit({ cwd, refName: head }));
       assert.isFalse(yield* workflow.hasCommit({ cwd, refName: "refs/heads/t3" }));
       for (const refName of ["unreadable", "malformed"]) {
@@ -126,6 +127,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       ]) {
         yield* driver.execute({ operation: "test.setupRepo", cwd, args });
       }
+      assert.equal(yield* workflow.readRefSnapshot(cwd), yield* driver.readRefSnapshot(cwd));
       const found = yield* Effect.forEach(
         ["main", "feature/topic", "alias", "mirrored", "t3/renamed", "feature/*"],
         (refName) => workflow.hasRefNamed({ cwd, refName }),

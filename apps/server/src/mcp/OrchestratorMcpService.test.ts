@@ -3560,6 +3560,11 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
         Layer.provide(
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+            resolve: () => Effect.succeed({ kind: "git" } as VcsDriverRegistry.VcsDriverHandle),
+          }),
+        ),
+        Layer.provide(
           Layer.mock(GitVcsDriver.GitVcsDriver)({
             resolvePrimaryRemoteName: () => Effect.succeed("origin"),
             resolveDefaultBranchName: () => Effect.succeed("main"),

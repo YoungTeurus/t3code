@@ -78,6 +78,13 @@ export const makeVcsBackend = Effect.gen(function* () {
   return {
     execute: route("execute"),
     status: route("status"),
+    readRefSnapshot: (cwd: string) =>
+      registry.resolve({ cwd }).pipe(
+        Effect.flatMap(({ kind }) =>
+          kind === "git" ? git.readRefSnapshot(cwd) : Effect.succeed(null),
+        ),
+        Effect.orElseSucceed(() => null),
+      ),
     statusDetails: route("statusDetails"),
     statusDetailsLocal: route("statusDetailsLocal"),
     statusDetailsRemote: route("statusDetailsRemote"),
@@ -88,6 +95,7 @@ export const makeVcsBackend = Effect.gen(function* () {
     readRangeContext: route("readRangeContext"),
     getReviewBranchCommits: route("getReviewBranchCommits"),
     clearWorktreeCheckoutCache: git.clearWorktreeCheckoutCache,
+    invalidateRefs: git.invalidateRefs,
     getReviewDiffPreview: route("getReviewDiffPreview"),
     getReviewDiffFileContents: route("getReviewDiffFileContents"),
     readConfigValue: route("readConfigValue"),

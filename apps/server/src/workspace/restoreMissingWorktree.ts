@@ -179,8 +179,8 @@ export const makeRestoreMissingWorktree = Effect.gen(function* () {
     if (
       yield* (
         gitWorkflow.recoverWorktree?.({ cwd: project.workspaceRoot, path: worktreePath, branch }) ??
-          Effect.succeed(false)
-      )
+        Effect.succeed(false)
+      ).pipe(Effect.mapError((cause) => new WorktreeRecreateError({ worktreePath, branch, cause })))
     )
       return;
     if ((exists && !leftover) || !(yield* isManagedWorktreePath(worktreePath))) return;

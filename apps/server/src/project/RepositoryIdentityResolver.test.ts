@@ -123,7 +123,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.displayName).toBe("Acme/Platform/_git/Tool.git");
       expect(identity?.name).toBe("Tool.git");
       expect(sourceControlDefinitions.repositorySelector(identity)).toBe("Tool.git");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(gitResolverLayer)),
   );
 
   it.effect("resolves the fetch remote of a partial clone", () =>

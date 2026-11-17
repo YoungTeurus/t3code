@@ -151,7 +151,9 @@ const TriggerWaitTool = Tool.make("t3_trigger_wait", {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Title, "Wait for the next trigger");
+})
+  .annotate(Tool.Title, "Wait for the next trigger")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const BackgroundWaitTool = Tool.make("t3_background_wait", {
   description:

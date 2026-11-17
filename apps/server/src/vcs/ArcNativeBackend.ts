@@ -433,7 +433,9 @@ export const makeArcNativeBackend = Effect.fn("ArcNativeBackend.make")(function*
     resolvePushTarget: Effect.fn("ArcNativeBackend.resolvePushTarget")(function* (cwd: string) {
       const ctx = yield* native(cwd, "resolvePushTarget", ops.context(cwd));
       const branch = ctx.upstream?.replace(/^arcadia\//, "") ?? ctx.branch;
-      return branch === null ? null : { remoteName: "arcadia", branchName: branch };
+      return branch === null
+        ? null
+        : { remoteName: "arcadia", branchName: branch, viaPushRemote: false };
     }),
     pushCurrentBranch: (cwd) => native(cwd, "push", ops.pushCurrentBranch(cwd)),
     pullCurrentBranch: (cwd) => native(cwd, "pull", ops.pullCurrentBranch(cwd)),

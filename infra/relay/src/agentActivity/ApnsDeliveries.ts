@@ -47,9 +47,9 @@ import * as ApnsDeliveryQueue from "./ApnsDeliveryQueue.ts";
 import { withSpanAttributes } from "../observability.ts";
 
 import {
+  isFreshTerminalNotification,
   alertForAttentionTransition,
   alertForWakeTransition,
-  wakeTransitionRows,
   alertForNewlyTerminal,
   alertForTerminalAggregate,
   rowPhasesChanged,
@@ -211,9 +211,10 @@ function notificationForState(input: {
   if (state.snoozeWake !== undefined) {
     if (
       previous?.snoozeWake?.eventId !== state.snoozeWake.eventId &&
-      shouldAlertForActivity({ ...state, preferences, nowMs: input.nowMs })
+      preferences.notifyOnCompletion &&
+      isFreshTerminalNotification(state.snoozeWake.occurredAt, input.nowMs)
     )
-      return notificationForActivity({ ...state, status: statusForPhase(state.phase) });
+      return notificationForActivity({ ...state, status: "Woke" });
     if (previous === undefined || previous.phase === state.phase) return null;
   }
   const { snoozeWake: _snoozeWake, ...ordinaryState } = state;

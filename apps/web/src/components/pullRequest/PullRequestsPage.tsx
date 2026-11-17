@@ -1233,10 +1233,7 @@ export function PullRequestsPage() {
   );
   const listError = pullRequestListReadError(
     listQuery.error
-      ? {
-          ...listQuery.error,
-          message: `${environmentLabels.get(listQuery.error.environmentId) || "Environment"}: ${listQuery.error.message}`,
-        }
+      ? `${environmentLabels.get(listQuery.error.environmentId) || "Environment"}: ${listQuery.error.message}`
       : null,
     answered?.errors ?? [],
   );

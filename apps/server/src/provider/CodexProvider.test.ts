@@ -71,6 +71,25 @@ function makeFakeCodexAppServers() {
                 });
               }
               helper.requests.push(frame.params);
+              if (frame.method === "plugin/installed")
+                return respond(frame.id, {
+                  marketplaces: [
+                    {
+                      name: "local",
+                      plugins: [
+                        {
+                          id: "sample@local",
+                          name: "sample",
+                          installed: true,
+                          enabled: true,
+                          authPolicy: "ON_USE",
+                          installPolicy: "AVAILABLE",
+                          source: { type: "remote" },
+                        },
+                      ],
+                    },
+                  ],
+                });
               return respond(frame.id, {
                 data: (frame.params?.cwds ?? []).map((cwd) => ({
                   cwd,
@@ -111,7 +130,13 @@ it.effect("reuses one Codex skills helper per launch until it idles out", () =>
     );
     const read = (cwd: string, homePath = "/home-a") =>
       probe({ binaryPath: "codex", homePath, cwd, environment: {} }).pipe(
-        Effect.map((skills) => skills.map((skill) => skill.name)),
+        Effect.map(({ skills, pluginCatalog }) => {
+          assert.deepStrictEqual(pluginCatalog, {
+            status: "ready",
+            plugins: [{ id: "sample@local", name: "sample", source: "local" }],
+          });
+          return skills.map((skill) => skill.name);
+        }),
       );
 
     assert.deepStrictEqual(yield* read("/alpha"), ["skill-in-/alpha"]);
@@ -119,7 +144,9 @@ it.effect("reuses one Codex skills helper per launch until it idles out", () =>
     assert.strictEqual(helpers.length, 1);
     assert.deepStrictEqual(helpers[0]!.requests, [
       { cwds: ["/alpha"], forceReload: true },
+      { cwds: ["/alpha"] },
       { cwds: ["/beta"], forceReload: true },
+      { cwds: ["/beta"] },
     ]);
 
     // Another home is another launch identity; the previous helper retires at once.

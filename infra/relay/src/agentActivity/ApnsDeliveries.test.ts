@@ -607,6 +607,7 @@ describe("ApnsDeliveries", () => {
       const first = yield* deliveries.sendForTarget({
         target: { ...phone, last_aggregate_json: JSON.stringify(aggregate) },
         aggregate: wakeAggregate,
+        state: { ...state, snoozeWake: wakeAggregate.activities[0]!.snoozeWake },
         nowMs: 5_000,
       });
       expect(first?.kind).toBe("push_notification");
@@ -614,6 +615,7 @@ describe("ApnsDeliveries", () => {
       const duplicate = yield* deliveries.sendForTarget({
         target: { ...phone, last_aggregate_json: JSON.stringify(wakeAggregate) },
         aggregate: wakeAggregate,
+        state: { ...state, snoozeWake: wakeAggregate.activities[0]!.snoozeWake },
         nowMs: 5_000,
       });
       expect(duplicate).toBeNull();
@@ -630,6 +632,7 @@ describe("ApnsDeliveries", () => {
           }),
         },
         aggregate: wakeAggregate,
+        state: { ...state, snoozeWake: wakeAggregate.activities[0]!.snoozeWake },
         nowMs: 5_000,
       });
       expect(disabled).toBeNull();
@@ -666,6 +669,11 @@ describe("ApnsDeliveries", () => {
           }),
         },
         aggregate: approvalWake,
+        state: {
+          ...state,
+          phase: "waiting_for_approval",
+          snoozeWake: approvalWake.activities[0]!.snoozeWake,
+        },
         nowMs: 5_000,
       });
       expect(disabledApproval).toBeNull();
@@ -684,6 +692,12 @@ describe("ApnsDeliveries", () => {
       const second = yield* deliveries.sendForTarget({
         target: { ...phone, last_aggregate_json: JSON.stringify(wakeAggregate) },
         aggregate: nextWake,
+        state: {
+          ...state,
+          threadId: ThreadId.make("thread-2"),
+          threadTitle: "Second",
+          snoozeWake: nextWake.activities[1]!.snoozeWake,
+        },
         nowMs: 5_000,
       });
       expect(second?.kind).toBe("push_notification");
