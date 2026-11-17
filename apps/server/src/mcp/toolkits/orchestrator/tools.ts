@@ -145,7 +145,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const TriggerWaitTool = Tool.make("t3_trigger_wait", {
   description:
-    "Leave this top-level thread in Working / Waiting after this turn succeeds, without keeping the model running. Use when authorized work is blocked on an external event and this thread has an active native PR watch or an enabled bound scheduled task or webhook. Starting a watch does not register this explicit wait. Not for human input: ask a question or request approval instead. Supply a short reason. Then finish your turn. Any incoming message or trigger clears the wait; opening the chat does not. After handling a PR event or a check with no change, call again if work still waits for events. Stop clears waiting only; PR watches, schedules and webhooks stay enabled. Does not create a trigger or wait inside this tool.",
+    "Mark this top-level thread Working / Waiting after this turn succeeds, without keeping the model running. For authorized work awaiting an external event; requires an active native PR watch or enabled bound schedule/webhook. Starting a watch does not register waiting. Give a short reason, then finish your turn. Messages/events clear waiting; opening the chat does not. Call again after handling an event if work still waits. For human input, ask a question or request approval. Stop clears waiting; watches and automations stay enabled. Does not create a trigger or block this tool.",
   parameters: Schema.Struct({ reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)) }),
   success: Schema.Struct({ waitingWhenTurnEnds: Schema.Literal(true) }),
   failure: OrchestratorMcpFailure,
